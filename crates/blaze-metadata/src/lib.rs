@@ -3,8 +3,9 @@
 //! blaze-registry where cargo would have it and read from its manifest, and the two resolves
 //! of cargo's `resolve_ws_with_opts` made by blaze-resolve, guided by the lock file. Either
 //! the whole workspace's graph, as `cargo metadata` prints it, or that of one build
-//! ([`Build`]), whose features are a build's and not unified over every member
-//! (docs/self-contained.md, "Resolution and fetching").
+//! ([`Build`]), whose features are a build's: unified over the members it selects, or over
+//! every member with `resolver.feature-unification = "workspace"` (docs/self-contained.md,
+//! "Resolution and fetching").
 //!
 //! A lock file that is missing or that the manifests no longer agree with is written again,
 //! as cargo writes it, when the resolve needs no version the lock file does not have. What
@@ -21,6 +22,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use blaze_manifest::config::RegistryConfig;
+use blaze_manifest::config::schema::{CargoResolverConfig, FeatureUnification};
 use blaze_manifest::manifest::{EitherManifest, Manifest, read_manifest};
 use blaze_manifest::metadata::{SerializedPackage, export, export_package, root_manifest};
 use blaze_manifest::{Config, Context, Workspace};
@@ -346,7 +348,8 @@ pub fn units(asked: &Asked<'_>, units: &Units<'_>) -> Result<blaze_units::UnitGr
         units.profile,
     )?;
     resolved(asked, None, |resolved| {
-        let Resolved { ws, resolve, specs, cli_features, behavior, packages: reads, .. } = resolved;
+        let FeatureRoots { specs, members: member_features } = resolved.one_feature_resolve()?;
+        let Resolved { ws, resolve, behavior, packages: reads, .. } = resolved;
         let profiles = blaze_manifest::profiles::Profiles::new(
             ws.profiles(),
             ws.unstable_features(),
@@ -362,12 +365,11 @@ pub fn units(asked: &Asked<'_>, units: &Units<'_>) -> Result<blaze_units::UnitGr
             Some(target) => vec![CompileKind::Target(InternedString::new(&target.triple))],
             None => vec![CompileKind::Host],
         };
-        let member_features = members_with_features(&resolved.members, specs, cli_features)?;
         let dev = if has_dev_units { HasDevUnits::Yes } else { HasDevUnits::No };
         let opts = FeatureOpts::new(behavior, dev, ForceAllTargets::No);
         let features =
             FeatureResolver::resolve(&packages, resolve, &member_features, &kinds, opts)?;
-        let roots: Vec<PackageId> = member_features.iter().map(|(it, _)| it.package_id()).collect();
+        let roots = resolved.selected_ids(&specs);
         let mut by_id = FxHashMap::default();
         for id in resolve.iter() {
             let manifest = resolved
@@ -401,16 +403,82 @@ pub struct Resolved<'a> {
     pub members: Members<'a>,
     /// The members' ids, in the workspace's order.
     pub member_ids: &'a [PackageId],
+    /// The packages selected: those built, or those whose trees are printed.
     pub specs: &'a [PackageIdSpec],
     pub cli_features: &'a CliFeatures,
     pub behavior: ResolveBehavior,
     pub has_dev_units: HasDevUnits,
+    /// `resolver.feature-unification`: which members the features are resolved for.
+    pub unification: FeatureUnification,
     /// What was read of every package the lock file names.
     pub packages: &'a FxHashMap<PackageId, Read>,
     /// The manifest of every package the lock file names.
     pub manifests: &'a FxHashMap<PackageId, &'a Manifest>,
     /// The configuration the workspace was read with.
     pub config: &'a Config,
+}
+
+/// One feature resolve of a build: the packages it selects, and the members it resolves the
+/// features of, with theirs from the command line.
+pub struct FeatureRoots<'a> {
+    pub specs: Vec<PackageIdSpec>,
+    pub members: Vec<(&'a Summary, CliFeatures)>,
+}
+
+impl<'a> Resolved<'a> {
+    /// The feature resolves of the build, as cargo's `resolve_ws_with_opts` makes them under
+    /// `resolver.feature-unification`: one of the selected packages, which resolves the
+    /// features of every member under `workspace`; one per selected package under `package`.
+    pub fn feature_resolves(&self) -> Result<Vec<FeatureRoots<'a>>> {
+        let all;
+        let resolved_for = match self.unification {
+            FeatureUnification::Workspace => {
+                all = self.member_ids.iter().map(|id| id.to_spec()).collect::<Vec<_>>();
+                &all[..]
+            }
+            FeatureUnification::Selected | FeatureUnification::Package => self.specs,
+        };
+        let members = members_with_features(&self.members, resolved_for, self.cli_features)?;
+        if !matches!(self.unification, FeatureUnification::Package) {
+            return Ok(vec![FeatureRoots { specs: self.specs.to_vec(), members }]);
+        }
+        // Each package gets only the features the command line gives it, so that `-p a -p b
+        // -F a/x,b/y` does not ask `b` for `x`.
+        let one = |spec: &PackageIdSpec| -> Result<FeatureRoots<'a>> {
+            let mut narrowed = self.cli_features.clone();
+            let enabled = members.iter().filter(|(member, _)| spec.matches(member.package_id()));
+            narrowed.features =
+                std::rc::Rc::new(enabled.flat_map(|(_, it)| it.features.iter().cloned()).collect());
+            let specs = vec![spec.clone()];
+            let members = members_with_features(&self.members, &specs, &narrowed)?;
+            Ok(FeatureRoots { specs, members })
+        };
+        self.specs.iter().map(one).collect()
+    }
+
+    /// The build's one feature resolve. `resolver.feature-unification = "package"` makes one
+    /// per package, and so a package built for two of them with other features each; blaze
+    /// builds one copy of each package per build, so that is refused for several packages.
+    fn one_feature_resolve(&self) -> Result<FeatureRoots<'a>> {
+        let mut resolves = self.feature_resolves()?;
+        if resolves.len() > 1 {
+            let named: Vec<String> =
+                self.specs.iter().map(|it| format!("`{}`", it.name())).collect();
+            bail!(
+                "blaze does not build several packages with `resolver.feature-unification = \
+                 \"package\"` yet: it resolves the features of {} apart, and blaze builds each \
+                 package once per build; build them one at a time with `-p`",
+                named.join(", ")
+            );
+        }
+        resolves.pop().context("the build selects no package")
+    }
+
+    /// The members `specs` select, in the workspace's order.
+    fn selected_ids(&self, specs: &[PackageIdSpec]) -> Vec<PackageId> {
+        let selected = |id: &&PackageId| specs.iter().any(|spec| spec.matches(**id));
+        self.member_ids.iter().filter(selected).copied().collect()
+    }
 }
 
 /// The packages a command selects of the workspace, from its members' ids.
@@ -621,12 +689,21 @@ fn resolving_with<R>(
         Some(build) if !build.dev_units => HasDevUnits::No,
         _ => HasDevUnits::Yes,
     };
+    let unification = feature_unification(&ctx.config)?;
+    let every_member: Vec<PackageIdSpec>;
+    let resolved_for = match unification {
+        FeatureUnification::Workspace => {
+            every_member = member_ids.iter().map(|id| id.to_spec()).collect();
+            &every_member
+        }
+        FeatureUnification::Selected | FeatureUnification::Package => &specs,
+    };
     let (mut whole, targeted) = resolve_ws(
         &mut PackageRegistry::new(registry),
         &resolving,
         lock.as_ref(),
         &cli_features,
-        &specs,
+        resolved_for,
         has_dev_units,
     )
     .context("blaze picks a registry package only at the version Cargo.lock has (#321)")?;
@@ -682,11 +759,23 @@ fn resolving_with<R>(
         cli_features: &cli_features,
         behavior,
         has_dev_units,
+        unification,
         packages: &reads,
         manifests: &manifests,
         config: &ctx.config,
     };
     then(resolved, serialized, &ids, &unused_patches)
+}
+
+/// `resolver.feature-unification`, which nightly cargo reads only with `-Zfeature-unification`
+/// (`unstable.feature-unification`); `selected` otherwise.
+fn feature_unification(config: &Config) -> Result<FeatureUnification> {
+    let resolver = config.get::<CargoResolverConfig>("resolver")?;
+    let unstable = config.get::<Option<bool>>("unstable.feature-unification")?;
+    Ok(match (unstable, resolver.feature_unification) {
+        (Some(true), Some(it)) => it,
+        _ => FeatureUnification::Selected,
+    })
 }
 
 /// What `cargo metadata` prints of `resolved`, and what of it a build of its members reads.
@@ -700,15 +789,12 @@ fn described(
         ws,
         resolve: targeted,
         member_ids,
-        specs,
-        cli_features,
         behavior,
         has_dev_units,
         packages: reads,
         ..
     } = *resolved;
     let current = resolved.members.current;
-    let members_of = || resolved.members;
 
     let kinds = match &asked.platform {
         Some(platform) => vec![CompileKind::Target(InternedString::new(platform.triple))],
@@ -719,11 +805,12 @@ fn described(
     let resolve = match &asked.build {
         None => resolve_graph(targeted, member_ids, current, &packages, &kinds)?,
         Some(build) => {
-            let member_features = members_with_features(&members_of(), specs, cli_features)?;
+            let FeatureRoots { specs, members: member_features } =
+                resolved.one_feature_resolve()?;
             let opts = FeatureOpts::new(behavior, has_dev_units, ForceAllTargets::No);
             let features =
                 FeatureResolver::resolve(&packages, targeted, &member_features, &kinds, opts)?;
-            roots = member_features.iter().map(|(it, _)| it.package_id()).collect();
+            roots = resolved.selected_ids(&specs);
             let activated = |platform: &Platform| packages.activates(platform);
             graph::of_build(
                 targeted,

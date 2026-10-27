@@ -277,6 +277,7 @@ cargo, as [cargo.md](cargo.md) lists.
 | unit tests, integration tests, examples, benches | supported | served; adding or removing a `#[test]` is cargo's |
 | doctests | supported through `cargo blaze test --doc` (`doctests.py`, 30 crates); documentation behind `cfg(doc)` is not seen | served; an example ra-jit cannot build is left to rustdoc with the reason |
 | features, optional and weak dependencies, feature unification under resolvers 1, 2 and 3 | supported | `--features` served; `--all-features` and `--no-default-features` handed to cargo |
+| `resolver.feature-unification` (`-Zfeature-unification`) | `selected` and `workspace` supported; `package` supported for one package, and refused with a reason for several, which it builds with other features each | as for a build |
 | path, git, registry, renamed, vendored, `[patch]` and `[replace]` dependencies | supported | served |
 | an edit to a path dependency the daemon was not asked to build | refused with a reason | cargo |
 | `RUSTFLAGS` and `[build] rustflags`, including `-C target-cpu` and `target-feature` | supported | handed to cargo when set in the environment; unverified in configuration |

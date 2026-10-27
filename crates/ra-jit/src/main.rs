@@ -5889,8 +5889,9 @@ impl std::fmt::Display for Refused {
     }
 }
 
-/// Why the source as it is can't be built by the daemon, when it can't: a file that does
-/// not parse, then the errors found in the edited files, then a function left uncompiled.
+/// Why the source as it is can't be built by the daemon, when it can't: the proc-macro server
+/// failed an expansion, then a file that does not parse, then the errors found in the edited
+/// files, then a function left uncompiled.
 /// Paths are shown from `root`, the workspace's, as rustc's errors show them.
 fn refusal(
     db: &RootDatabase,
@@ -5900,6 +5901,9 @@ fn refusal(
     broken: Option<errors::Said>,
     out_of_date: Option<hir_ty_codegen::OutOfDate>,
 ) -> Option<Refused> {
+    if let Some(failed) = ra_jit_expand::server_failed() {
+        return Some(Refused::Error(errors::Said::one(errors::of_none(failed))));
+    }
     if let Some(unparsed) = unparsed(db, sources, watched, root) {
         return Some(Refused::Error(errors::Said::one(unparsed)));
     }
@@ -8563,6 +8567,10 @@ fn run_holding(
             if let Some(unset) = &cold.unset {
                 errors_for_the_daemon(&args, &errors::Said::one(errors::of_none(unset)))?;
                 bail!("{unset}");
+            }
+            if let Some(failed) = ra_jit_expand::server_failed() {
+                errors_for_the_daemon(&args, &errors::Said::one(errors::of_none(failed)))?;
+                bail!("{failed}");
             }
             eprint!("cold: ");
             report(&cold);

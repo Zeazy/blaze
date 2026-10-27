@@ -1001,6 +1001,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- blaze finds the toolchain behind Homebrew's rustup. Homebrew installs `rustc` as a script
+  that starts rustup, beside no toolchain, and blaze took a proxy only by the name `rustup`,
+  so the script's directory was read as a toolchain with no standard library: every build
+  script failed with "the toolchain has no source of the standard library". A `rustc` that is
+  not in the `bin` of a sysroot with `lib/rustlib` is now a proxy, whatever it is called.
 - The borrow checker: lifetime elision counts none of the impl's lifetimes in a parameter
   that writes `Self`, as rustc counts only what a parameter's type writes or elides, so
   `fn store(self, db: &dyn Db) -> &Store` in `impl Id<'_>` returns a borrow of `db`. It

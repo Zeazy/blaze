@@ -389,6 +389,12 @@ def flow(name, spec, work, env):
     if left:
         rough.append(("stop", "blaze processes left after `cargo blaze stop`: " + "; ".join(left), "P1"))
 
+    where = [(blaze_dir, "$PROJECT"), (os.path.realpath(blaze_dir), "$PROJECT"), (env["HOME"], "$HOME")]
+    if pairs and pairs[0][1].code != 0:
+        said = (pairs[0][1].err + pairs[0][1].out).strip().splitlines()
+        rough = [(pairs[0][1].name, "cargo fails here too, so this says nothing of blaze: "
+                  + (said[-1] if said else ""), "env")]
+        return steps, rough, where, [theirs for _, theirs in pairs]
     for ours, theirs in pairs:
         if ours.code != theirs.code:
             rough.append((ours.name, f"exit {ours.code}, cargo's {theirs.code}", "P0"))
@@ -405,7 +411,6 @@ def flow(name, spec, work, env):
         compiled = lambda step: sorted(l.split()[1] for l in step.err.splitlines() if l.strip().startswith("Compiling "))
         if compiled(ours) and not compiled(theirs) and ours.code == 0:
             rough.append((ours.name, f"says Compiling {', '.join(compiled(ours))}, where cargo compiles nothing", "P1"))
-    where = [(blaze_dir, "$PROJECT"), (os.path.realpath(blaze_dir), "$PROJECT"), (env["HOME"], "$HOME")]
     if normalized(noop.err, where) != normalized(noop2.err, where):
         rough.append(("build (no-op again)", "prints other than the first no-op", "P2"))
     return steps, rough, where, [theirs for _, theirs in pairs]
@@ -499,7 +504,7 @@ def main():
         summary.append({"project": name, "steps": [{"name": s.name, "exit": s.code, "secs": round(s.secs, 3)} for s in steps],
                         "cargo": [{"name": c.name, "exit": c.code, "secs": round(c.secs, 3)} for c in cargo_steps],
                         "rough": rough})
-        failed |= bool(rough)
+        failed |= any(sev != "env" for _, _, sev in rough)
     with open(os.path.join(args.work, "summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
     print("experience: " + ("rough edges above" if failed else "clean"))

@@ -2167,7 +2167,8 @@ pub(super) fn unwind_sections(commands: &[u8]) -> anyhow::Result<Option<[Option<
             for nth in 0..u32_at(commands, command + 64)? as usize {
                 let header = command + SEGMENT + nth * SECTION;
                 let at = || -> anyhow::Result<_> {
-                    Ok((u64::from(u32_at(commands, header + 48)?), u64_at(commands, header + 40)?))
+                    let offset = u64::from(u32_at(commands, header + 48)?);
+                    Ok((offset, u64_at(commands, header + 40)?))
                 };
                 match commands.get(header..header + 16) {
                     Some(b"__eh_frame\0\0\0\0\0\0") => frames = Some(at()?),
@@ -2475,8 +2476,8 @@ mod tests {
         let linked = with_frames(0x1000, unwind, frames as u64);
         let wanted = headerpad_short(&linked).unwrap().unwrap();
         assert!(pad >= wanted && pad < 2 * wanted, "{pad:#x} for {wanted:#x}");
-        let room = with_frames((HEADER + SEGMENT + 3 * SECTION) as u32 + pad as u32, unwind, frames as u64);
-        assert_eq!(headerpad_short(&room).unwrap(), None);
+        let room = (HEADER + SEGMENT + 3 * SECTION) as u32 + pad as u32;
+        assert_eq!(headerpad_short(&with_frames(room, unwind, frames as u64)).unwrap(), None);
     }
 
     #[test]

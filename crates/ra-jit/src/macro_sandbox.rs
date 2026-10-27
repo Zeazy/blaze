@@ -64,7 +64,7 @@ fn wrapped(server: Command) -> std::io::Result<Command> {
         std::io::Error::other(format!(
             "a proc-macro server runs in a sandbox, which can't be made for it: {why}; `{}=off` \
              runs proc-macro servers, build scripts and tests outside a sandbox",
-            sandboxed::VAR
+            crate::sandbox::VAR_BLAZE
         ))
     };
     if !cfg!(any(target_os = "linux", target_os = "macos")) {

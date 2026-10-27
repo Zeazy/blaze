@@ -285,7 +285,7 @@ KEPT_FROM = re.escape(kept_from())
 if SANDBOXED:
     SAYS = {
         "outside the sandbox": [
-            r"Always tests::reads_a_file: it runs outside the sandbox: `RA_JIT_SANDBOX=off`$",
+            r"Always tests::reads_a_file: it runs outside the sandbox: `BLAZE_SANDBOX=off`$",
             r"\d+ tests outside the sandbox, run every time and never kept: ",
         ],
         "the file a test reads edited": [

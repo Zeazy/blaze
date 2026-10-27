@@ -420,7 +420,7 @@ pub(crate) fn denied(lines: &[Line], shown: &str, opt_out: &OptOut) -> Denied {
     let ways = |names: &str| {
         format!(
             "`unsandboxed-tests = [{names}]` under `{TABLE}` in {manifest} (`tests = false` for \
-             every test of the package), or `{VAR}=off` for every test of the command"
+             every test of the package), or `BLAZE_SANDBOX=off` for every test of the command"
         )
     };
     let mut denied = Denied { tests: BTreeSet::new(), unknown: false };

@@ -164,7 +164,7 @@ pub(crate) fn missing_server() -> String {
          vendor/proc-macro-srv --crate rust_analyzer_proc_macro_srv --crate proc_macro --out \
          <scratch>/server.o --exe {beside}` (what `.github/scripts/build_release.py --server` \
          runs; the releases ship it on Linux and macOS), or have rustc build the load's proc macros \
-         with `{SERVER}=0`"
+         with `BLAZE_PROC_MACRO_SERVER=0`"
     )
 }
 
@@ -327,7 +327,7 @@ pub(crate) fn refusal(name: &str, why: &str, workspace: &Path) -> String {
     format!(
         "the proc macro `{name}` cannot run as WebAssembly: {why}\n  name its package in \
          `{NATIVE_KEY}` under [workspace.metadata.blaze] in {} to expand it natively, or set \
-         {WASM}=0 for every proc macro",
+         BLAZE_PROC_MACRO_WASM=0 for every proc macro",
         root.join("Cargo.toml").display(),
     )
 }

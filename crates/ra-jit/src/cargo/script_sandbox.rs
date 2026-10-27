@@ -207,7 +207,7 @@ pub(crate) fn plan(script: &Script<'_>) -> anyhow::Result<Plan> {
     let package = script.package();
     let env = with_own_rustc(script.env, script.scratch)?;
     if !on_in(script.env) {
-        return Ok(Plan::Outside(format!("{}=off", sandboxed::VAR), env));
+        return Ok(Plan::Outside(format!("{}=off", crate::sandbox::VAR_BLAZE), env));
     }
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         // No running it outside instead: a build that can't keep its promise stops.
@@ -215,7 +215,7 @@ pub(crate) fn plan(script: &Script<'_>) -> anyhow::Result<Plan> {
             "the build script of `{package}` runs in a sandbox, and there is none on {} yet \
              (#257); `{}=off` runs build scripts and tests outside a sandbox, as cargo does",
             std::env::consts::OS,
-            sandboxed::VAR
+            crate::sandbox::VAR_BLAZE
         );
     }
     let root = workspace_of(script)?;
@@ -556,7 +556,7 @@ pub(crate) fn run(script: &Script<'_>, plan: &Plan, stdin: Stdio) -> anyhow::Res
                 "error: the build script of `{package}` runs in a sandbox, which can't be made \
                  here: {why}\n`{}=off` runs build scripts and tests outside a sandbox, as cargo \
                  does\n",
-                sandboxed::VAR
+                crate::sandbox::VAR_BLAZE
             )
             .into_bytes(),
         );

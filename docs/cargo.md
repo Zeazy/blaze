@@ -167,13 +167,28 @@ the other target flags fail the build and say so. The doc tests are still taken 
 
 `run` then runs the program and `test` runs the test executables the way cargo does: the
 same working directory, the variables cargo sets, cargo's `Running` lines and the same exit
-status. Every test runs, unless `RA_JIT_TESTS=affected` says otherwise, and every test runs
-in a sandbox.
+status. Every test runs, unless `RA_JIT_TESTS=affected` says otherwise, outside any sandbox,
+as cargo runs it, unless the workspace opts into sandboxed tests.
 
-### Every test runs in a sandbox
+### Sandboxed tests (an experiment, opt-in)
 
-"Everything should by default be in sandbox and yea it should have sandbox support macos"
-(Andrew, 2026-10-26). Every test executable `cargo ra-jit test` runs, under `all` and
+Tests run in a sandbox only where the workspace opts in, in its root manifest:
+
+```toml
+[workspace.metadata.blaze]
+experimental = ["sandboxed-tests"]
+```
+
+or where a package does, in its own manifest, with `tests = true` under
+`[package.metadata.blaze.sandbox]`. `experimental` lists, by name, the experiments a workspace
+opts into; `sandboxed-tests` is the one there is, and any other name, or a value that is not a
+list of names, is an error that names the manifest and the names known. A test that is not
+sandboxed is not kept as passed under `RA_JIT_TESTS=affected`
+([below](#running-only-the-tests-that-have-not-passed)). Build scripts run in the sandbox
+whatever the workspace says ([below](#build-scripts-and-proc-macros-run-in-a-sandbox)), and
+proc macros run as WebAssembly.
+
+In a workspace that opts in, every test executable `cargo ra-jit test` runs, under `all` and
 `affected` alike, runs in a sandbox of its own, with libtest's threads inside it as cargo would
 run them. In it the machine's files are read-only; the workspace, the target directory and
 cargo's home (`CARGO_HOME`, `~/.cargo`) are as they are, but what a test writes there is kept
@@ -212,7 +227,7 @@ it ended with, with what was denied and the way out:
 What a thread no test marked or a process a test started was denied fails every test of the
 run, since which test it was for is not known.
 
-A package takes its tests out of the sandbox in its manifest:
+A package of a workspace that opts in takes its tests out of the sandbox in its manifest:
 
 ```toml
 [package.metadata.blaze.sandbox]
@@ -227,7 +242,7 @@ which and why. `RA_JIT_SANDBOX=off` runs every test of the command outside, as c
 test outside the sandbox is not hermetic: it runs every time and its pass is never kept, and
 the summary of the command names it.
 
-Where no sandbox can be made, `cargo ra-jit test` stops before any test runs, says why and how
+Where no sandbox can be made for a test that is opted in, `cargo ra-jit test` stops before any test runs, says why and how
 to fix it, and exits 101. It does not go on outside with a warning: a run that did would break,
 unseen, the promise that a test can't change the machine or reach the network, and a warning
 in a long log is not seen. `RA_JIT_SANDBOX=off` is the explicit way to run outside.
@@ -639,6 +654,14 @@ kept in blaze's store, as a compiled function is, so it travels with the store t
 (`ra-jit cache push|pull`, `RA_JIT_REMOTE`): a pass on main's CI stands on every branch whose
 test and inputs are the same.
 
+Only a sandboxed test's pass is kept, since only the sandbox records what a test read. In a
+workspace that has not opted into sandboxed tests
+([above](#sandboxed-tests-an-experiment-opt-in)) no test has a key, so every test runs every
+time, on every commit, as under `all`, and the command says so once, with the line to add and
+the manifest to add it to:
+
+    note: no test is sandboxed, so none is kept as passed and every test runs: sandboxed tests are an experiment a workspace opts into, with `experimental = ["sandboxed-tests"]` under `[workspace.metadata.blaze]` in /home/me/tsel/Cargo.toml
+
     Running unittests src/lib.rs (target/debug/deps/tsel-1f2e): 2 of 5 tests
     Cached tests/it.rs (target/debug/deps/it-9a8b): 2 tests, passed before as they are now
     Cached 5 tests from commit 2bfa62d8ce (run 18834512), 2 from an earlier run on this machine; 1 test run every time (`-v` says why); `RA_JIT_TESTS=all` runs every test
@@ -682,7 +705,7 @@ code runs:
 
 A test the sandbox can't make hermetic runs every time and is never kept: one that reaches a
 function ra-jit can't compile, a benchmark, one its package takes out of the sandbox, every one
-under `RA_JIT_SANDBOX=off`, and one whose reads are not all known (a program macOS starts
+of a workspace that has not opted in, every one under `RA_JIT_SANDBOX=off`, and one whose reads are not all known (a program macOS starts
 without the interposer). The summary says how many there are and names those outside the
 sandbox. `cargo ra-jit test -v` says, under each test executable, why each test it runs every
 time does (`Always`), by the fewest calls from the test to it.
@@ -931,7 +954,7 @@ keeps ([above](#running-only-the-tests-that-have-not-passed)), `verify` runs tho
 checks that they pass again, `all` every test. The default is `all`. `RA_JIT_TESTS_FROM` names
 where the passes a command keeps came from, for the summary of a command that finds them.
 `RA_JIT_SANDBOX=off` runs every test outside the sandbox
-([above](#every-test-runs-in-a-sandbox)), and `RA_JIT_TEST_ENV` names more variables a test
+([above](#sandboxed-tests-an-experiment-opt-in)), and `RA_JIT_TEST_ENV` names more variables a test
 is given under `affected`, by commas; both are read the same way.
 
 These are read by the daemon when it starts, from the environment of whichever command

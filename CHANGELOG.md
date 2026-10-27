@@ -565,6 +565,17 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Changed
 
+- Sandboxed tests are an experiment a workspace opts into: `experimental = ["sandboxed-tests"]`
+  under `[workspace.metadata.blaze]` in its root manifest, or `tests = true` under
+  `[package.metadata.blaze.sandbox]` in a package's. Elsewhere `cargo blaze test` runs tests as
+  `cargo test` does, so a test that writes `$HOME` passes where it failed with the sandbox's
+  denial. A test outside the sandbox has no record of what it read, so `RA_JIT_TESTS=affected`
+  keeps no pass of it and it runs on every commit; when no test of the command is sandboxed, a
+  note says what to add and to which manifest. `experimental` is the one list of opt-in
+  features: an unknown name, or a value that is not a list of names, is an error naming the
+  manifest and the known names. `tests = false`, `unsandboxed-tests` and `RA_JIT_SANDBOX=off`
+  work as before; build scripts stay sandboxed and proc macros WebAssembly. blaze's own
+  workspace opts in (docs/cargo.md, "Sandboxed tests (an experiment, opt-in)").
 - The programs print `blaze`, not `ra-jit` (#270, "What the programs print"): the `blaze:`
   prefix of their notes, `Finished ... profile [blaze]`, `blaze is enabled`, `plain cargo:
   through blaze`, `blaze could not compile`, `blaze cache gc` and the other errors and notes.
@@ -1041,6 +1052,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
   so the script's directory was read as a toolchain with no standard library: every build
   script failed with "the toolchain has no source of the standard library". A `rustc` that is
   not in the `bin` of a sysroot with `lib/rustlib` is now a proxy, whatever it is called.
+- A crate blaze builds itself (a proc macro, a build script, or what either links) reads the
+  variables its build script set with `cargo:rustc-env`: `mime_guess`'s
+  `MIME_TYPES_GENERATED_PATH`, so `rust-embed-impl` builds. blaze kept only cargo's own
+  `CARGO_*` and `OUT_DIR`; it now reads the names from the script's output, `output` in cargo's
+  layout of `target` and `run/stdout` in the build-dir layout.
 - An integration test that names a program (`env!("CARGO_BIN_EXE_app")`) builds when its
   build starts the daemon's worker: the worker was started with the variables of its build
   but not the places cargo set, so its load, which compiles before the first request is read,

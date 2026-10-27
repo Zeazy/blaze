@@ -13,6 +13,7 @@ mod client;
 pub(crate) mod closure;
 pub(crate) mod compile_time;
 mod directives;
+mod experimental;
 pub(crate) mod fetches;
 mod hermetic;
 pub(crate) mod layout;

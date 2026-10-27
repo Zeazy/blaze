@@ -162,9 +162,14 @@ What is specific to the port:
   only a patch whose frames don't fit there either is linked in full. The room for two more load commands and the table comes from `-Wl,-headerpad`,
   which `cargo ra-jit` gives the link in a file of its own beside the executable
   (`bin.headerpad`), last on the line: 1 MiB, or what the line asks for. The table grows
-  with the program (3 MB for a GUI app of 570 crates), so after each full link the daemon
-  reads the header, and when the room is short it writes what the table needs and a quarter
-  more into that file and links once again; the links after start from it. A link line
+  with the program (3 MB for a GUI app of 570 crates). Before a link the daemon makes the
+  room in that file what the executable there wants, and at least what the unwind
+  information of the objects it links will take: their `__eh_frame` and a table entry for
+  each frame and each `__compact_unwind` entry, counted from the objects and the prebuilt
+  standard library, so a first link has the room too (#173: bun's base was linked twice,
+  260 s each). After each full link it reads the header, and when the room is still short
+  it writes what the table needs and a quarter more into that file and links once again; the
+  links after start from it. A link line
   given to the daemon by hand keeps the headerpad it has, and without enough the splice
   declines. The file does not grow from splice to splice.
 - The splice reads and writes the loader's fixups as dyld info, the tables rustc's default

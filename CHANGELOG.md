@@ -1031,6 +1031,14 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- A macOS program with more than about 255 statics carrying a `#[link_section]` builds (#724):
+  each had a Mach-O section of its own, and an object has room for 255, which blaze reaches
+  across a whole program since it writes one object (`backend: Too many sections: 0x135`).
+  `inventory::submit!` and `#[ctor]` each give one in `__DATA,__mod_init_func`, so GPUI apps
+  hit it. Statics that name the same section now share it, as in LLVM's objects, through a
+  vendored cranelift-object (`vendor/cranelift-object/SOURCE.md`); on ELF a static keeps a
+  section of its own where the link's `--gc-sections` or `#[used]` needs one. Reported and
+  diagnosed by @maddada.
 - An integration test that names a program (`env!("CARGO_BIN_EXE_app")`) builds when its
   build starts the daemon's worker: the worker was started with the variables of its build
   but not the places cargo set, so its load, which compiles before the first request is read,

@@ -785,6 +785,7 @@ name = "blaze-registry"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blaze-manifest",
  "blaze-resolve",
  "blaze-source",
  "cargo-platform",

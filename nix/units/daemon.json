@@ -783,6 +783,7 @@
    {
     "dependencies": [
      "anyhow",
+     "blaze-manifest",
      "blaze-resolve",
      "blaze-source",
      "cargo-platform",
@@ -19075,6 +19076,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_manifest",
+       "unit": "blaze-manifest@0.1.0 lib blaze_manifest build"
       },
       {
        "name": "blaze_resolve",
@@ -40835,6 +40840,10 @@
        "unit": "anyhow@1.0.104 lib anyhow build"
       },
       {
+       "name": "blaze_manifest",
+       "unit": "blaze-manifest@0.1.0 lib blaze_manifest build"
+      },
+      {
        "name": "blaze_resolve",
        "unit": "blaze-resolve@0.1.0 lib blaze_resolve build"
       },
@@ -62464,6 +62473,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_manifest",
+       "unit": "blaze-manifest@0.1.0 lib blaze_manifest build"
       },
       {
        "name": "blaze_resolve",
@@ -84249,6 +84262,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_manifest",
+       "unit": "blaze-manifest@0.1.0 lib blaze_manifest build"
       },
       {
        "name": "blaze_resolve",

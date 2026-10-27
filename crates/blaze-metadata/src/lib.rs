@@ -883,7 +883,7 @@ fn fetch(
     store: Option<Arc<dyn blaze_registry::Blobs>>,
     respect_source_config: bool,
 ) -> Result<Vec<Package>> {
-    let sources = sources(ctx, offline, store, respect_source_config)?;
+    let sources = sources(ctx, offline, store, respect_source_config, None)?;
     let mut locked = Vec::new();
     let mut ids = Vec::new();
     // The `[[patch.unused]]` entries too, which the resolve has to see to keep them unused.
@@ -930,6 +930,7 @@ fn sources(
     offline: bool,
     store: Option<Arc<dyn blaze_registry::Blobs>>,
     respect_source_config: bool,
+    auth: Option<Arc<blaze_registry::auth::Auth>>,
 ) -> Result<blaze_registry::Sources> {
     let mut context = blaze_registry::Context::new(
         ctx.config.home().to_owned(),
@@ -937,6 +938,13 @@ fn sources(
     );
     context.net.offline = offline;
     context.store = store;
+    context.auth = match auth {
+        Some(auth) => Some(auth),
+        None => Some(Arc::new(blaze_registry::auth::Auth::new(
+            ctx.config.reload()?,
+            Box::new(blaze_registry::auth::Stderr),
+        ))),
+    };
     let mut config = source_config(&ctx.config)?;
     if !respect_source_config {
         config.sources.clear();
@@ -946,13 +954,15 @@ fn sources(
 
 /// The sources a registry's web API command finds its registry in: cargo's `SourceConfigMap`
 /// of the configuration (`[source]` replacing others only with `respect_source_config`, as
-/// `ops::registry` reads it both ways), offline as `net.offline` says.
+/// `ops::registry` reads it both ways), offline as `net.offline` says, with the command's
+/// credentials when it has them.
 pub fn registry_sources(
     ctx: &Context,
     respect_source_config: bool,
+    auth: Option<Arc<blaze_registry::auth::Auth>>,
 ) -> Result<blaze_registry::Sources> {
     let offline = ctx.config.net_config()?.offline.unwrap_or(false);
-    sources(ctx, offline, None, respect_source_config)
+    sources(ctx, offline, None, respect_source_config, auth)
 }
 
 /// A package of the lock file as `cargo vendor` reads it.
@@ -980,7 +990,7 @@ pub fn vendored(
     resolving_with(asked, None, Some(relock), |_, _, _, _| Ok(()))?;
     let read = with_lock(asked, "vendor", |ctx, _, lock| {
         let offline = asked.offline || ctx.config.net_config()?.offline.unwrap_or(false);
-        let sources = sources(ctx, offline, asked.store.clone(), respect_source_config)?;
+        let sources = sources(ctx, offline, asked.store.clone(), respect_source_config, None)?;
         let mut out = Vec::new();
         let mut locked = Vec::new();
         let mut fetched = Vec::new();

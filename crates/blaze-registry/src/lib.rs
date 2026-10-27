@@ -6,6 +6,7 @@
 //! from where is said at the top of each module; the plan is `docs/self-contained.md`.
 
 pub mod api;
+pub mod auth;
 pub mod directory;
 pub mod download;
 pub mod git;
@@ -73,11 +74,21 @@ pub struct Context {
     /// Whether a `.crate` is also written to cargo's cache,
     /// `$CARGO_HOME/registry/cache/<registry>/`, so that cargo finds it there offline.
     pub keep_crate_files: bool,
+    /// Where a registry that requires authentication gets its token; with none, such a registry
+    /// is refused.
+    pub auth: Option<Arc<auth::Auth>>,
 }
 
 impl Context {
     pub fn new(cargo_home: PathBuf, http: Arc<dyn http::Http>) -> Context {
-        Context { cargo_home, net: NetConfig::default(), http, store: None, keep_crate_files: true }
+        Context {
+            cargo_home,
+            net: NetConfig::default(),
+            http,
+            store: None,
+            keep_crate_files: true,
+            auth: None,
+        }
     }
 }
 

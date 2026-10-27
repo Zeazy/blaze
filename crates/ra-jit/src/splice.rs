@@ -687,9 +687,9 @@ pub(crate) fn headerpad_of_objects(paths: &[&Path]) -> anyhow::Result<Option<u64
             Ok(())
         };
         let added = match object::read::archive::ArchiveFile::parse(&*bytes) {
-            Ok(archive) => archive.members().try_for_each(|member| {
-                read(&mut unwinding, member?.data(&*bytes)?)
-            }),
+            Ok(archive) => archive
+                .members()
+                .try_for_each(|member| read(&mut unwinding, member?.data(&*bytes)?)),
             Err(_) => read(&mut unwinding, &bytes),
         };
         added.with_context(|| format!("reading the unwind information of {}", path.display()))?;

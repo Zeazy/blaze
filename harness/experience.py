@@ -168,7 +168,7 @@ fn main() {
     let (w, h) = detect();
     let mut pixmap = tiny_skia::Pixmap::new(4, 4).unwrap();
     pixmap.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
-    let _ = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let _ = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pixmap.data());
     println!("{}x{} {} {}", w > 0, h > 0, encoded.len(), said());
 }
@@ -205,6 +205,11 @@ PROJECTS = {
                            'pub fn label() -> String {\n    format!("tag{}", Tag(7).0)\n}\n',
     }, run=["-p", "app", "--", "--count", "4"], edit=("app/src/main.rs", '"before"\n}', '"after"\n}'),
         says=("before", "after"), release=True),
+    # A new project's first dependency, before any lock file: `cargo new`, `cargo add itoa`.
+    "newdeps": dict(files={
+        "Cargo.toml": toml("newdeps", 'itoa = "1"\n'),
+        "src/main.rs": 'fn main() {\n    println!("{}", itoa::Buffer::new().format(6 * 7));\n}\n',
+    }, edit=("src/main.rs", "6 * 7", "6 * 8"), says=("42", "48"), unlocked=True),
     # A Python extension (cdylib) and the crate it calls.
     "pyo3": dict(files={
         "Cargo.toml": '[workspace]\nmembers = ["ext", "core"]\nresolver = "2"\n',
@@ -275,13 +280,18 @@ class Step:
         self.name, self.argv = name, argv
 
 
-def fetch(spec, into):
+def fetch(spec, into, env):
     os.makedirs(into)
     if "files" in spec:
         for path, text in spec["files"].items():
             os.makedirs(os.path.dirname(os.path.join(into, path)) or into, exist_ok=True)
             with open(os.path.join(into, path), "w") as f:
                 f.write(text)
+        # A project someone has worked on has its lock file; `newdeps` is one that has none yet.
+        has_deps = any(re.search(r"\[dependencies\]\n\S", text) for text in spec["files"].values())
+        cargo = shutil.which("cargo", path=env["PATH"])
+        if has_deps and cargo and not spec.get("unlocked"):
+            subprocess.run([cargo, "generate-lockfile", "--quiet"], cwd=into, env=env, check=True)
         return
     cache = os.path.join(tempfile.gettempdir(), "experience-src", spec["rev"])
     if not os.path.isdir(cache):
@@ -318,7 +328,7 @@ def flow(name, spec, work, env):
     blaze_dir, cargo_dir = os.path.join(work, name), os.path.join(work, name + "-cargo")
     for d in (blaze_dir, cargo_dir):
         shutil.rmtree(d, ignore_errors=True)
-        fetch(spec, d)
+        fetch(spec, d, env)
     steps, rough = [], []
     # Where cargo is installed `cargo blaze` is the command; on a machine with no Rust, `blaze`.
     users_cargo = shutil.which("cargo", path=env["PATH"])
@@ -335,9 +345,12 @@ def flow(name, spec, work, env):
         return Step(step, [users_cargo or (own[-1] if own else "cargo"), *args], cargo_dir, env)
 
     def run_python(root, profile_dir):
-        lib = "libpyext.dylib" if sys.platform == "darwin" else "libpyext.so"
-        shutil.copy(os.path.join(root, "target", profile_dir, lib), os.path.join(root, "pyext.so"))
-        return subprocess.run([sys.executable, "-c", spec["python"]], cwd=root, capture_output=True, text=True).stdout.strip()
+        lib = os.path.join(root, "target", profile_dir, "libpyext.dylib" if sys.platform == "darwin" else "libpyext.so")
+        if not os.path.exists(lib):
+            return f"(no {os.path.relpath(lib, root)})"
+        shutil.copy(lib, os.path.join(root, "pyext.so"))
+        done = subprocess.run([sys.executable, "-c", spec["python"]], cwd=root, capture_output=True, text=True)
+        return done.stdout.strip() or done.stderr.strip()
 
     cold = blaze("build (cold)", "build", *target)
     c_cold = cargo("build (cold)", "build", *target)

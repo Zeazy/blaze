@@ -783,6 +783,7 @@
    {
     "dependencies": [
      "anyhow",
+     "blaze-resolve",
      "blaze-source",
      "cargo-platform",
      "filetime",
@@ -19074,6 +19075,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_resolve",
+       "unit": "blaze-resolve@0.1.0 lib blaze_resolve build"
       },
       {
        "name": "blaze_source",
@@ -40830,6 +40835,10 @@
        "unit": "anyhow@1.0.104 lib anyhow build"
       },
       {
+       "name": "blaze_resolve",
+       "unit": "blaze-resolve@0.1.0 lib blaze_resolve build"
+      },
+      {
        "name": "blaze_source",
        "unit": "blaze-source@0.1.0 lib blaze_source build"
       },
@@ -62455,6 +62464,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_resolve",
+       "unit": "blaze-resolve@0.1.0 lib blaze_resolve build"
       },
       {
        "name": "blaze_source",
@@ -84236,6 +84249,10 @@
       {
        "name": "anyhow",
        "unit": "anyhow@1.0.104 lib anyhow build"
+      },
+      {
+       "name": "blaze_resolve",
+       "unit": "blaze-resolve@0.1.0 lib blaze_resolve build"
       },
       {
        "name": "blaze_source",

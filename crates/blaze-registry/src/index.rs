@@ -466,8 +466,16 @@ impl Summaries {
     /// The versions that match `req`, read; one whose line is not what it was when its version
     /// was read is left out, as cargo leaves it out.
     pub fn matching<'a>(&'a self, req: &'a VersionReq) -> impl Iterator<Item = IndexLine> + 'a {
+        self.select(|version| req.matches(version))
+    }
+
+    /// The versions `keep` keeps, read as [`Summaries::matching`] reads them.
+    pub fn select<'a>(
+        &'a self,
+        mut keep: impl FnMut(&Version) -> bool + 'a,
+    ) -> impl Iterator<Item = IndexLine> + 'a {
         self.lines()
-            .filter(|(version, _)| req.matches(version))
+            .filter(move |(version, _)| keep(version))
             .filter_map(|(_, line)| parse_line(line).ok())
     }
 

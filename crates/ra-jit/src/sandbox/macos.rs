@@ -142,6 +142,17 @@ fn spellings(dir: &Path) -> Vec<String> {
     out
 }
 
+/// The directory in `parent` that stands in for `dir` (an overlay's upper, a temporary
+/// directory's empty one), made: named as the file system names `dir`. A directory's own name
+/// is what `getattrlist` says of it, from which `realpath` builds the path, so one named
+/// otherwise (`up/0`) turned `/w/flags/target` into `/w/0/target`, which is not there.
+fn stand_in(parent: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+    let made = real.file_name().map_or_else(|| parent.to_owned(), |name| parent.join(name));
+    std::fs::create_dir_all(&made).map_err(|error| format!("{}: {error}", made.display()))?;
+    Ok(made)
+}
+
 /// The user's temporary directory, as macOS gives it to each user (`/var/folders/...`).
 fn user_temp() -> Option<PathBuf> {
     let mut buffer = [0u8; 1024];
@@ -240,19 +251,30 @@ pub(super) fn run(spec: &Spec, program: Option<&[OsString]>) -> Result<i32, Stri
     for (at, overlay) in spec.overlays.iter().enumerate() {
         std::fs::create_dir_all(overlay)
             .map_err(|error| format!("{}: {error}", overlay.display()))?;
+        let upper = stand_in(&scratch.dir.join("up").join(at.to_string()), overlay)?;
         for it in spellings(overlay) {
-            config.push_str(&format!("O\t{at}\t{it}\t{dir}/up/{at}\n"));
+            config.push_str(&format!("O\t{at}\t{it}\t{}\n", upper.display()));
         }
     }
-    let mut temps =
-        vec![(PathBuf::from("/private/tmp"), "tmp"), ("/private/var/tmp".into(), "var")];
-    temps.extend(user_temp().map(|it| (it, "user")));
-    if let Some((_, it)) = spec.env.iter().find(|(name, _)| name == "TMPDIR") {
-        temps.push((PathBuf::from(it), "user"));
+    let user = user_temp();
+    let env_temp = spec.env.iter().find(|(name, _)| name == "TMPDIR");
+    let env_temp = env_temp.map(|(_, it)| PathBuf::from(it));
+    let users = scratch.dir.join("tmp/user");
+    let user_in = match user.as_ref().or(env_temp.as_ref()) {
+        Some(it) => stand_in(&users, it)?,
+        None => users,
+    };
+    let mut temps = Vec::new();
+    for (temp, to) in [("/private/tmp", "tmp"), ("/private/var/tmp", "var")] {
+        let temp = PathBuf::from(temp);
+        let empty = stand_in(&scratch.dir.join("tmp").join(to), &temp)?;
+        temps.push((temp, empty));
     }
+    temps.extend(user.map(|it| (it, user_in.clone())));
+    temps.extend(env_temp.map(|it| (it, user_in.clone())));
     for (temp, to) in &temps {
         for it in spellings(temp) {
-            config.push_str(&format!("B\t{it}\t{dir}/tmp/{to}\n"));
+            config.push_str(&format!("B\t{it}\t{}\n", to.display()));
         }
     }
     // A directory passed through or overlaid below a temporary one is reached through the
@@ -270,7 +292,7 @@ pub(super) fn run(spec: &Spec, program: Option<&[OsString]>) -> Result<i32, Stri
                 })
             });
             let Some(below) = below.filter(|it| !it.as_os_str().is_empty()) else { continue };
-            let made = scratch.dir.join("tmp").join(to).join(below);
+            let made = to.join(below);
             std::fs::create_dir_all(&made)
                 .map_err(|error| format!("{}: {error}", made.display()))?;
         }
@@ -332,7 +354,7 @@ pub(super) fn run(spec: &Spec, program: Option<&[OsString]>) -> Result<i32, Stri
     let mut insert_var = OsString::from("DYLD_INSERT_LIBRARIES=");
     insert_var.push(insert);
     env.push(c(insert_var.as_bytes()));
-    env.push(c(format!("TMPDIR={dir}/tmp/user/").as_bytes()));
+    env.push(c(format!("TMPDIR={}/", user_in.display()).as_bytes()));
     env.push(c(format!("__RA_JIT_SANDBOX={dir}").as_bytes()));
     env.push(c(format!("__RA_JIT_SANDBOX_EXEC={nonce}").as_bytes()));
     let mut env_ptrs: Vec<*const libc::c_char> = env.iter().map(|it| it.as_ptr()).collect();

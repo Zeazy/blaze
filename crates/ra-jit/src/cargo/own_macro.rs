@@ -163,7 +163,7 @@ pub(crate) fn missing_server() -> String {
          macros only for its own. Build it there from a blaze checkout with `ra-jit \
          vendor/proc-macro-srv --crate rust_analyzer_proc_macro_srv --crate proc_macro --out \
          <scratch>/server.o --exe {beside}` (what `.github/scripts/build_release.py --server` \
-         runs; the releases ship it on Linux), or have rustc build the load's proc macros \
+         runs; the releases ship it on Linux and macOS), or have rustc build the load's proc macros \
          with `{SERVER}=0`"
     )
 }

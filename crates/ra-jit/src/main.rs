@@ -5622,13 +5622,16 @@ impl std::error::Error for PatchUnlinked {}
 /// linked (`over_rustc`) is spliced or fails with [`RustcLinkedLost`], and so is an object
 /// that names what only that executable has (`onto`, [`ONTO_RUSTCS`]). With `packs` the object
 /// is kept packed after the link ([`whole`]). A patch the splice declines whose line is the
-/// worker's own (`own_line`, [`own_link_line`]) fails with [`PatchUnlinked`].
+/// worker's own (`own_line`, [`own_link_line`]) fails with [`PatchUnlinked`]. `prebuilt` is the
+/// standard library the line links besides `object`, which the room of a first link counts
+/// ([`headerpad_ahead`]).
 #[expect(clippy::too_many_arguments)]
 fn link(
     cmd: Option<&str>,
     splice: Option<&Path>,
     patch: Option<&Path>,
     object: &Path,
+    prebuilt: Option<&Path>,
     patched: bool,
     over_rustc: bool,
     onto: bool,
@@ -5821,7 +5824,8 @@ fn link(
     let reading = whole::read(object)?;
     if let Some(binary) = splice {
         set_aside(binary)?;
-        headerpad_ahead(binary)?;
+        let objects: Vec<&Path> = [Some(object), prebuilt, patch].into_iter().flatten().collect();
+        headerpad_ahead(binary, &objects)?;
     }
     let reached = cargo::plan::reached_only(cmd);
     let cmd = match reached.as_deref() {
@@ -5948,17 +5952,23 @@ impl std::fmt::Display for LinkFailed {
 
 impl std::error::Error for LinkFailed {}
 
-/// Tells the link of the program at `binary` the room after the load commands that the
-/// executable there now wants for splices, when that is more than the link is told: what
-/// rustc linked there, or the last link, is the program as it was, and the room it wants is
-/// what this one will, so that it is not linked a second time with more
-/// ([`headerpad_short`]).
-fn headerpad_ahead(binary: &Path) -> std::io::Result<()> {
+/// Tells the link of the program at `binary` the room after the load commands it will want for
+/// splices, when that is more than the link is told, so that it is not linked a second time
+/// with more ([`headerpad_short`]): what the executable there, of the last link, wants, and
+/// what the unwind information of the `objects` it links will take, which is all a first
+/// link has to go by (#173).
+fn headerpad_ahead(binary: &Path, objects: &[&Path]) -> anyhow::Result<()> {
     let Some(kept) = cargo::plan::headerpad_of(binary) else { return Ok(()) };
-    match splice::headerpad_wanted(binary) {
-        Ok(Some((pad, _))) if pad > kept => cargo::plan::write_headerpad(binary, pad),
-        _ => Ok(()),
+    let before = match splice::headerpad_wanted(binary) {
+        Ok(Some((pad, _))) => pad,
+        _ => 0,
+    };
+    let linked = splice::headerpad_of_objects(objects)?.unwrap_or(0);
+    let pad = before.max(linked);
+    if pad > kept {
+        cargo::plan::write_headerpad(binary, pad)?;
     }
+    Ok(())
 }
 
 /// The room after the load commands to link the executable at `binary` again with, when the
@@ -9196,6 +9206,7 @@ fn run_holding(
                 args.splice.as_deref(),
                 args.patch.as_deref(),
                 &args.out,
+                args.prebuilt.as_deref(),
                 false,
                 false,
                 known.stats.onto_rustcs,
@@ -10498,6 +10509,7 @@ fn run_holding(
             let (as_built, object) = (as_built.clone(), out.clone());
             let packs = packs_whole(&programs[at].args);
             let own_line = programs[at].args.exe.is_some();
+            let prebuilt = programs[at].args.prebuilt.clone();
             let read_as = (over != base).then(|| (over.clone(), unlinked.clone()));
             let linked = std::thread::spawn(move || {
                 let failed = link(
@@ -10505,6 +10517,7 @@ fn run_holding(
                     splice.as_deref(),
                     spliced.as_deref(),
                     &object,
+                    prebuilt.as_deref(),
                     patched,
                     over_rustc,
                     onto,
@@ -11118,7 +11131,17 @@ impl Program {
             let packs = packs_whole(args);
             let own_line = args.exe.is_some();
             let unlinked = link(
-                cmd, splice, patch, &args.out, patched, over_rustc, onto, defer, packs, own_line,
+                cmd,
+                splice,
+                patch,
+                &args.out,
+                args.prebuilt.as_deref(),
+                patched,
+                over_rustc,
+                onto,
+                defer,
+                packs,
+                own_line,
             )
             .err();
             if let Some(lost) =

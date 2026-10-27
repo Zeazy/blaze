@@ -11,6 +11,7 @@ pub mod download;
 pub mod git;
 pub mod http;
 pub mod index;
+pub mod query;
 pub mod registry;
 pub mod sources;
 pub mod sparse;
@@ -26,6 +27,7 @@ use anyhow::Context as _;
 use blaze_source::SourceId;
 
 pub use download::{Blobs, Package};
+pub use query::IndexRegistry;
 pub use registry::Registry;
 pub use sources::{Locked, SourceConfig, SourceDef, SourceMap, Sources};
 
@@ -117,6 +119,25 @@ impl PackageCacheLock {
             file.lock().with_context(|| format!("failed to lock `{}`", path.display()))?;
         }
         Ok(PackageCacheLock { _file: file })
+    }
+}
+
+/// Runs `future` to its end on this thread, parked while it waits.
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let mut future = std::pin::pin!(future);
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    loop {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        std::thread::park();
     }
 }
 

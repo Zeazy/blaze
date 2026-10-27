@@ -658,6 +658,45 @@ pub(crate) fn headerpad_wanted(path: &Path) -> anyhow::Result<Option<(u64, bool)
     macho::headerpad_wanted(&commands)
 }
 
+/// The `-headerpad` an Apple executable linked of the objects and archives at `paths` wants for
+/// splices, at most, from their unwind information alone: what its first link is told, which
+/// has no executable of before to go by. `None` when none of them has an AArch64 Mach-O object
+/// with unwind information.
+pub(crate) fn headerpad_of_objects(paths: &[&Path]) -> anyhow::Result<Option<u64>> {
+    let mut unwinding = macho::Unwinding::default();
+    for path in paths {
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // SAFETY: the daemon wrote the objects and the archives are the prebuilt standard
+        // library's: nothing writes one while the link that reads it is under way.
+        let bytes = unsafe { memmap2::Mmap::map(&file)? };
+        let read = |unwinding: &mut macho::Unwinding, object: &[u8]| -> anyhow::Result<()> {
+            if object.get(..4) != Some(&object::macho::MH_MAGIC_64.to_le_bytes()) {
+                return Ok(());
+            }
+            let Some([frames, compact]) = macho::unwind_sections(object)? else { return Ok(()) };
+            if let Some((offset, size)) = frames {
+                let at = usize::try_from(offset)?;
+                let section = object
+                    .get(at..at + usize::try_from(size)?)
+                    .context("`__eh_frame` past the end of the object")?;
+                unwinding.add_frames(section)?;
+            }
+            if let Some((_, size)) = compact {
+                unwinding.add_compact(size);
+            }
+            Ok(())
+        };
+        let added = match object::read::archive::ArchiveFile::parse(&*bytes) {
+            Ok(archive) => archive.members().try_for_each(|member| {
+                read(&mut unwinding, member?.data(&*bytes)?)
+            }),
+            Err(_) => read(&mut unwinding, &bytes),
+        };
+        added.with_context(|| format!("reading the unwind information of {}", path.display()))?;
+    }
+    Ok(unwinding.headerpad())
+}
+
 /// Why a splice stopped half way: a newer edit wants the executable.
 #[derive(Debug)]
 pub(crate) struct GaveUp;

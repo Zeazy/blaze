@@ -649,7 +649,7 @@ fn cargo_token(
     action: &Action<'_>,
     previous: Option<String>,
 ) -> anyhow::Result<Answer> {
-    let alternative = (!target.original.is_crates_io()).then(|| target.name.as_deref()).flatten();
+    let alternative = (!target.original.is_crates_io()).then_some(target.name.as_deref()).flatten();
     let name = target.shown();
     match action {
         Action::Get => Ok(previous.map_or(Answer::NotFound, Answer::Token)),
@@ -866,7 +866,7 @@ fn searched(
     } else if total > limit && limit >= 100 {
         let extra = match target.original.is_crates_io() {
             true => {
-                let url = url::Url::parse_with_params("https://crates.io/search", &[("q", query)])?;
+                let url = url::Url::parse_with_params("https://crates.io/search", [("q", query)])?;
                 format!(" (go to {url} to see more)")
             }
             false => String::new(),

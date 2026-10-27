@@ -105,13 +105,13 @@ fn make_in(
         };
         let made_dir = !bin.exists();
         std::fs::create_dir_all(&bin)?;
-        if !ours(&path) {
-            if let Err(error) = link(target, &path) {
-                if let Some(kept) = &kept {
-                    std::fs::rename(kept, &path)?;
-                }
-                return Err(error).with_context(|| format!("linking {}", path.display()));
+        if !ours(&path)
+            && let Err(error) = link(target, &path)
+        {
+            if let Some(kept) = &kept {
+                std::fs::rename(kept, &path)?;
             }
+            return Err(error).with_context(|| format!("linking {}", path.display()));
         }
         lines.push(match &kept {
             Some(kept) => format!(

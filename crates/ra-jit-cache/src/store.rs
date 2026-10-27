@@ -33,8 +33,7 @@ const INDEX: &str = "index";
 
 /// The setting `BLAZE_<name>`, else its old name `RA_JIT_<name>`, as blaze itself reads them.
 fn setting(name: &str) -> Option<std::ffi::OsString> {
-    std::env::var_os(format!("BLAZE_{name}"))
-        .or_else(|| std::env::var_os(format!("RA_JIT_{name}")))
+    std::env::var_os(format!("BLAZE_{name}")).or_else(|| std::env::var_os(format!("RA_JIT_{name}")))
 }
 
 /// How many codes of a function its results are kept for: the code it has and the two before

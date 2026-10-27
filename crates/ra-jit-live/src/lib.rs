@@ -29,8 +29,7 @@ use std::{fmt, path::PathBuf, sync::OnceLock, time::Duration};
 
 /// The setting `BLAZE_<name>`, else its old name `RA_JIT_<name>`, as blaze itself reads them.
 fn setting(name: &str) -> Option<std::ffi::OsString> {
-    std::env::var_os(format!("BLAZE_{name}"))
-        .or_else(|| std::env::var_os(format!("RA_JIT_{name}")))
+    std::env::var_os(format!("BLAZE_{name}")).or_else(|| std::env::var_os(format!("RA_JIT_{name}")))
 }
 
 pub mod format;

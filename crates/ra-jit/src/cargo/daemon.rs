@@ -848,7 +848,12 @@ impl Spare {
 
     /// Tells it to be the worker `args` start, with the variables `env`. `None` when it
     /// can't be told: it has ended, or a path of the build is not text.
-    fn told(mut self, args: &[OsString], env: &BTreeMap<String, String>, cwd: &Path) -> Option<Spare> {
+    fn told(
+        mut self,
+        args: &[OsString],
+        env: &BTreeMap<String, String>,
+        cwd: &Path,
+    ) -> Option<Spare> {
         let told = || {
             let args: Option<Vec<String>> =
                 args.iter().map(|it| it.to_str().map(str::to_owned)).collect();

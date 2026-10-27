@@ -1054,6 +1054,12 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- A proc-macro server that dies or fails an expansion fails the build with what it said, the
+  macro and its library (`ra_jit_expand::server_failed`), at the end of the cold build and on
+  every build after. Before, the build went on without the expansion and failed far from it:
+  fd with a server killed after its first five derives said `fd::run: frontend: mir:
+  MissingFunctionDefinition`, as `Opts::parse` had no `#[derive(Parser)]` impl to resolve to;
+  now it says the server failed to expand `Parser` of clap_derive, and how it exited.
 - A build after `cargo blaze clean`, `cargo clean` or `rm -rf target` while the daemon runs
   builds, by the same worker (#721, reported by @maddada). The worker read the standard
   library's unit it had written under `target/ra-jit/whole/` again, and every build until

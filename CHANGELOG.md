@@ -1047,6 +1047,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- A crate blaze builds itself (a proc macro, a build script, or what either links) reads the
+  variables its build script set with `cargo:rustc-env`: `mime_guess`'s
+  `MIME_TYPES_GENERATED_PATH`, so `rust-embed-impl` builds. blaze kept only cargo's own
+  `CARGO_*` and `OUT_DIR`; it now reads the names from the script's output, `output` in cargo's
+  layout of `target` and `run/stdout` in the build-dir layout.
 - An integration test that names a program (`env!("CARGO_BIN_EXE_app")`) builds when its
   build starts the daemon's worker: the worker was started with the variables of its build
   but not the places cargo set, so its load, which compiles before the first request is read,

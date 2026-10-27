@@ -493,8 +493,8 @@ schedules of their own: each takes hours or a dedicated machine, and the train w
 them. On a pull request that changes the flake, `nix/` or the dependencies, `nix-live.yaml`
 checks only the unit graphs. The flake's `dist` passes `--nix` to `build_release.py`, which
 then checks that every binary loads through a `/nix/store` loader instead of the glibc 2.34
-floor of a shipped release. `fork-sync.yaml` runs on pushes to main that touch `vendor/`, and
-`live-*.yaml` on their own branches. None of them is part of `ci`. `site.yaml` deploys the
+floor of a shipped release. `live-*.yaml` run on their own branches (the forks of `vendor/` sync themselves from main,
+by a workflow of their own). None of them is part of `ci`. `site.yaml` deploys the
 site, and `release.yaml` builds releases from tags, each target through
 `.github/scripts/build_release.py` (the `dist` profile with PGO,
 [reports/RELEASE-BUILD.md](reports/RELEASE-BUILD.md)), the recipe the flake's `dist` runs too.

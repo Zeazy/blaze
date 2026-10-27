@@ -887,9 +887,8 @@ fn said(toolchain: &Path, args: &[&str]) -> anyhow::Result<String> {
     let rustc = toolchain.join("bin").join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
     let asked: Vec<OsString> = args.iter().map(OsString::from).collect();
     let answer = crate::answers::own_answer_of(rustc.as_os_str(), &asked, &[]);
-    let answer = answer.with_context(|| {
-        format!("blaze has no answer of its own to `rustc {}`", args.join(" "))
-    })?;
+    let answer = answer
+        .with_context(|| format!("blaze has no answer of its own to `rustc {}`", args.join(" ")))?;
     Ok(String::from_utf8_lossy(&answer).into_owned())
 }
 

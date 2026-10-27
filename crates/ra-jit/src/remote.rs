@@ -914,10 +914,7 @@ async fn lacking(
             eprintln!("remote: the keys of {pack}.pack are not known, so it is fetched: {e:#}");
         }
         let all_here = keys.is_ok_and(|keys| {
-            !keys.is_empty()
-                && keys
-                    .chunks_exact(32)
-                    .all(|key| <&[u8; 32]>::try_from(key).is_ok_and(|key| here.contains(key)))
+            !keys.is_empty() && keys.as_chunks::<32>().0.iter().all(|key| here.contains(key))
         });
         ((pack, listed), all_here)
     }));
@@ -1409,8 +1406,8 @@ impl Lazy {
     fn add(&mut self, pack: Digest, listed: Listed, keys: &[u8]) {
         let at = self.packs.len() as u32;
         self.packs.push((pack, listed, OnceLock::new()));
-        for key in keys.chunks_exact(32) {
-            self.holder.entry(key.try_into().expect("32 bytes")).or_insert(at);
+        for key in keys.as_chunks::<32>().0 {
+            self.holder.entry(*key).or_insert(at);
         }
     }
 

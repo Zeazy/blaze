@@ -344,7 +344,7 @@ const WASM_DIR: &str = "ra-jit-wasm";
 fn described_at(library: &Path, description: &str) -> Result<PathBuf, String> {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(description.as_bytes());
-    let digest: String = digest[..8].iter().map(|it| format!("{it:02x}")).collect();
+    let digest = crate::content::hex(&digest[..8]);
     let stem = library.file_stem().and_then(OsStr::to_str).ok_or("a library unnamed")?;
     let dir = library.parent().ok_or("a library without a directory")?;
     let dir = dir.join(WASM_DIR).join(format!("{stem}-{digest}"));

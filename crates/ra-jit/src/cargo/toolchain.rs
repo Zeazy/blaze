@@ -200,7 +200,7 @@ fn note_once(version: &str, named: &str) {
     hash.update(version);
     hash.update([0]);
     hash.update(name());
-    let key: String = hash.finalize().iter().take(12).map(|it| format!("{it:02x}")).collect();
+    let key = crate::content::hex(&hash.finalize()[..12]);
     let marker = own::home().map(|home| home.join("noted").join(key));
     if marker.as_ref().is_some_and(|it| it.exists()) {
         return;

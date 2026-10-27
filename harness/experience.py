@@ -344,15 +344,18 @@ def flow(name, spec, work, env):
     noop = blaze("build (no-op)", "build", *target)
     noop2 = blaze("build (no-op again)", "build", *target)
     c_noop = cargo("build (no-op)", "build", *target)
+    pairs = [(cold, c_cold), (noop, c_noop)]
+    sep = ["--"] if run_args and run_args[0] != "-p" else []
     if run_args is not None:
-        blaze("run", "run", *target, *(["--"] if run_args and run_args[0] != "-p" else []), *run_args)
+        pairs.append((blaze("run", "run", *target, *sep, *run_args), cargo("run", "run", *target, *sep, *run_args)))
     if spec.get("test", []) is not None:
-        blaze("test", "test", *target, *spec.get("test", []))
-    blaze("check", "check", *target)
+        pairs.append((blaze("test", "test", *target, *spec.get("test", [])), cargo("test", "test", *target, *spec.get("test", []))))
+    pairs.append((blaze("check", "check", *target), cargo("check", "check", *target)))
     edit(blaze_dir, spec)
     edit(cargo_dir, spec)
     edited = blaze("build (edit)", "build", *target)
     c_edited = cargo("build (edit)", "build", *target)
+    pairs.append((edited, c_edited))
     says = spec.get("says")
     if says and run_args is not None:
         ran = blaze("run (edited)", "run", *target, *(["--"] if run_args and run_args[0] != "-p" else []), *run_args)
@@ -373,21 +376,26 @@ def flow(name, spec, work, env):
     if left:
         rough.append(("stop", "blaze processes left after `cargo blaze stop`: " + "; ".join(left), "P1"))
 
-    for ours, theirs in ((cold, c_cold), (noop, c_noop), (edited, c_edited)):
+    for ours, theirs in pairs:
         if ours.code != theirs.code:
             rough.append((ours.name, f"exit {ours.code}, cargo's {theirs.code}", "P0"))
         elif ours.code == 0 and ours.secs > theirs.secs * SLACK + SLACK_ABS:
             rough.append((ours.name, f"{ours.secs:.2f} s, cargo {theirs.secs:.2f} s", "P0"))
     for s in steps:
-        if s.code != 0 and s.name not in ("build (cold)", "build (no-op)", "build (edit)"):
+        if s.code != 0 and s.name not in [ours.name for ours, _ in pairs]:
             rough.append((s.name, f"exit {s.code}", "P0"))
         for line in (s.out + s.err).splitlines():
-            if "ra-jit" in line:
+            # Directories keep the old name (#270); a word of what it says does not.
+            if re.search(r"(?<![/\w.-])ra-jit(?![/\w-])", line):
                 rough.append((s.name, f"says ra-jit: {line.strip()}", "P2"))
+    for ours, theirs in pairs:
+        compiled = lambda step: sorted(l.split()[1] for l in step.err.splitlines() if l.strip().startswith("Compiling "))
+        if compiled(ours) and not compiled(theirs) and ours.code == 0:
+            rough.append((ours.name, f"says Compiling {', '.join(compiled(ours))}, where cargo compiles nothing", "P1"))
     where = [(blaze_dir, "$PROJECT"), (os.path.realpath(blaze_dir), "$PROJECT"), (env["HOME"], "$HOME")]
     if normalized(noop.err, where) != normalized(noop2.err, where):
         rough.append(("build (no-op again)", "prints other than the first no-op", "P2"))
-    return steps, rough, where, [c_cold, c_noop, c_edited]
+    return steps, rough, where, [theirs for _, theirs in pairs]
 
 
 def transcript(steps, where):

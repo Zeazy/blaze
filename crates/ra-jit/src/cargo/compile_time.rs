@@ -888,7 +888,7 @@ fn said(toolchain: &Path, args: &[&str]) -> anyhow::Result<String> {
     let asked: Vec<OsString> = args.iter().map(OsString::from).collect();
     let answer = crate::answers::own_answer_of(rustc.as_os_str(), &asked, &[]);
     let answer = answer.with_context(|| {
-        format!("ra-jit has no answer of its own to `rustc {}`", args.join(" "))
+        format!("blaze has no answer of its own to `rustc {}`", args.join(" "))
     })?;
     Ok(String::from_utf8_lossy(&answer).into_owned())
 }

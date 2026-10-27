@@ -624,7 +624,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 fn open_store(store: Option<&Path>) -> anyhow::Result<ra_jit_store::Store> {
     let dir =
-        store.context("blaze keeps downloads in its store, which `RA_JIT_CACHE=off` turns off")?;
+        store.context("blaze keeps downloads in its store, which `BLAZE_CACHE=off` turns off")?;
     ra_jit_store::Store::open_by_content(dir)
         .with_context(|| format!("opening blaze's store in {}", dir.display()))
 }

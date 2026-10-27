@@ -73,7 +73,7 @@ fn wrapped(server: Command) -> std::io::Result<Command> {
     match spec_of(&server) {
         Ok(spec) => {
             let exe = std::env::current_exe()
-                .map_err(|why| refused(format!("finding ra-jit itself: {why}")))?;
+                .map_err(|why| refused(format!("finding blaze itself: {why}")))?;
             let mut command = Command::new(exe);
             // The server by where it is: the path it was named by may go through a link in a
             // directory the sandbox has empty (a toolchain linked into `/tmp`), and the

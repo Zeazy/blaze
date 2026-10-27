@@ -245,7 +245,7 @@ pub(crate) fn libraries_of(
             .collect();
     };
     let Ok(exe) = std::env::current_exe() else {
-        return vec![Err("ra-jit does not know where it is".to_owned()); libraries.len()];
+        return vec![Err("blaze does not know where it is".to_owned()); libraries.len()];
     };
     let next = std::sync::atomic::AtomicUsize::new(0);
     let made = std::sync::Mutex::new(vec![Ok(None); libraries.len()]);
@@ -281,7 +281,7 @@ pub(crate) fn libraries_of(
                     let start = std::time::Instant::now();
                     let ran = command.stdin(std::process::Stdio::null()).output();
                     if std::env::var_os("RA_JIT_STATS").is_some() {
-                        eprintln!("ra-jit: the proc macro {name} made in {:.1?}", start.elapsed());
+                        eprintln!("blaze: the proc macro {name} made in {:.1?}", start.elapsed());
                     }
                     let found = match ran {
                         Ok(ran) if ran.status.success() => {

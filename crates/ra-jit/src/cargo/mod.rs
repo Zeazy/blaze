@@ -245,7 +245,7 @@ fn blaze_tag() -> String {
 /// `RA_JIT_REMOTE_REQUIRED` makes that a failure of the build.
 fn remote_failed_it() -> Option<i32> {
     let down = crate::remote::noted_down().filter(|_| crate::remote::required())?;
-    say::error(&format!("the remote failed and RA_JIT_REMOTE_REQUIRED is set: {down}"));
+    say::error(&format!("the remote failed and BLAZE_REMOTE_REQUIRED is set: {down}"));
     Some(FAILED)
 }
 
@@ -454,7 +454,7 @@ fn loaded_by_cargo(asked: &Invocation, cwd: &Path, key: &str) -> anyhow::Result<
 /// What the store of compiled code holds and may hold, and where it is.
 fn store_status() -> String {
     let Some(dir) = daemon::store() else {
-        return "store: none (RA_JIT_CACHE says so)".to_owned();
+        return "store: none (BLAZE_CACHE says so)".to_owned();
     };
     let held = ra_jit_store::StoreDir::at(&dir).stats().map_or(0, |it| it.held());
     let most = match ra_jit_store::limit_for(&dir) {

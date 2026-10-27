@@ -220,7 +220,7 @@ pub(crate) fn tests(
     let mut results = affected::on().then(Results::open).flatten();
     if affected::on() && results.is_none() {
         say::note(
-            "no store (`RA_JIT_CACHE=off`): no test's pass is kept, and every test the daemon \
+            "no store (`BLAZE_CACHE=off`): no test's pass is kept, and every test the daemon \
              built runs",
         );
     }

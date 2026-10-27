@@ -51,7 +51,7 @@ fn unpacked_max() -> anyhow::Result<Option<u64>> {
         Ok(text) if text == "off" => Ok(None),
         Ok(text) => {
             Ok(Some(ra_jit_store::parse_size(&text).with_context(|| {
-                format!("RA_JIT_DEPS_MAX=`{text}` is neither a size nor `off`")
+                format!("BLAZE_DEPS_MAX=`{text}` is neither a size nor `off`")
             })?))
         }
     }

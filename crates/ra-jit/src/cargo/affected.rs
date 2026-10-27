@@ -51,7 +51,7 @@ pub(crate) fn ask(state: &State) {
         match on {
             true if wanted.is_file() => {}
             // A fresh target has no directory for the program until it is built.
-            true => _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&wanted, "")),
+            true => _ = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&wanted, "")),
             false => {
                 _ = std::fs::remove_file(&wanted);
                 _ = std::fs::remove_file(dir.join(plan::REACH));

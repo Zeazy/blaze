@@ -419,7 +419,7 @@ fn turned_down(program: &Program, said: &crate::errors::Said) -> String {
         (Kind::Example, _) => format!("example \"{name}\""),
         (Kind::Test, _) => format!("test \"{name}\""),
     };
-    super::state::turned_down(said, &program.package.name.to_string(), &target)
+    super::state::turned_down(said, &program.package.name, &target)
 }
 
 /// Has the daemon build the `programs` of `checkout` whole, and puts each where cargo would.

@@ -660,7 +660,7 @@ mod tests {
             write::{Object, Relocation, Symbol, SymbolSection},
         };
         let mut object = Object::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
-        let local = |object: &mut Object, at: usize, code: &[u8]| {
+        let local = |object: &mut Object<'_>, at: usize, code: &[u8]| {
             let section = object.add_subsection(object::write::StandardSection::Text, b"f");
             let offset = object.append_section_data(section, code, 4);
             object.add_symbol(Symbol {

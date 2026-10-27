@@ -511,6 +511,11 @@ enum PassMode {
         skipped: u8,
     },
     Indirect,
+    /// An unsized value (`unsized_fn_params`): rustc's `PassMode::Indirect` with
+    /// `meta_attrs`, the address of the value and then its metadata (length or vtable), the
+    /// value staying where the caller has it. In the codegen the place of such a value is a
+    /// pair of those two words in memory, as an unsized local's slot is.
+    IndirectUnsized,
     /// A vector of AArch64's shorter than 64 bits, whose lanes LLVM widens to make a 64-bit
     /// vector of the same count (`<4 x i8>` as `<4 x i16>`): in the low 64 bits of a vector
     /// register, each lane of `lane` at the bottom of `stride` bytes, the bits above it
@@ -884,10 +889,11 @@ impl CodegenUnit {
         if (roots.start.is_some() || roots.whole) && !backend::edits_follow() {
             backend::set_whole_program();
         }
+        let root_crates: FxHashSet<Crate> = all().map(|root| root.krate(db)).collect();
         let mut own_statics = OwnStatics::new(
             db,
             symbols,
-            all().map(|root| root.krate(db)).collect(),
+            root_crates.iter().copied().collect(),
             std::mem::take(theirs),
             std::mem::take(unknown),
             !roots.on_demand.is_empty(),
@@ -937,6 +943,7 @@ impl CodegenUnit {
             {
                 cg.define_allocator_shim(first.krate(db))?;
             }
+            cg.define_rustc_allocator_entries(&root_crates)?;
             for &id in roots.kept {
                 cg.static_data(id)?;
             }
@@ -4473,16 +4480,35 @@ fn place_stand_ins(
 /// is asked for the name rather than for the attributes of all its functions.
 #[salsa::tracked(returns(copy))]
 fn declares_global_allocator(db: &dyn HirDatabase, krate: Crate) -> bool {
-    const EXPORTED: &str = "__ra_jit_global_alloc";
+    global_allocator_export(db, krate, "__ra_jit_global_alloc").is_some()
+}
+
+/// The entries of the global allocator that `alloc` calls by name, with the function the
+/// `#[global_allocator]`'s expansion exports for each: what rustc's shim calls, and what ours
+/// goes to instead. The number of pointer-sized arguments, and whether one is returned.
+const ALLOCATOR_ENTRIES: [(&str, &str, usize, bool); 4] = [
+    ("__rust_alloc", "__ra_jit_global_alloc", 2, true),
+    ("__rust_dealloc", "__ra_jit_global_dealloc", 3, false),
+    ("__rust_realloc", "__ra_jit_global_realloc", 4, true),
+    ("__rust_alloc_zeroed", "__ra_jit_global_alloc_zeroed", 2, true),
+];
+
+/// The function of `krate` the `#[global_allocator]`'s expansion exports as `exported`.
+fn global_allocator_export(
+    db: &dyn HirDatabase,
+    krate: Crate,
+    exported: &str,
+) -> Option<FunctionId> {
     let def_map = hir_def::nameres::crate_def_map(db, krate);
-    let name = hir_expand::name::Name::new_root(EXPORTED);
-    def_map.modules(db).any(|(module_id, module)| {
+    let name = hir_expand::name::Name::new_root(exported);
+    def_map.modules(db).find_map(|(module_id, module)| {
         let Some(hir_def::ModuleDefId::FunctionId(id)) = module.scope(db).get(&name).take_values()
         else {
-            return false;
+            return None;
         };
-        id.lookup(db).container == ItemContainerId::ModuleId(module_id)
-            && AttrFlags::export_name(db, id.into()).is_some_and(|it| it.as_str() == EXPORTED)
+        let exports =
+            AttrFlags::export_name(db, id.into()).is_some_and(|it| it.as_str() == exported);
+        (id.lookup(db).container == ItemContainerId::ModuleId(module_id) && exports).then_some(id)
     })
 }
 
@@ -5058,7 +5084,10 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let sections = backend::sections_of_their_own()
             && isa.triple().binary_format == target_lexicon::BinaryFormat::Elf;
         let mut builder = ObjectBuilder::new(isa, "ra-jit", default_libcall_names())?;
-        builder.per_function_section(sections).per_data_object_section(sections);
+        // A wasm object is written from this one, a segment per piece of data aligned as its
+        // section is: a section shared by several has the largest alignment of them.
+        let data_sections = sections || Target::current().writes_wasm_objects();
+        builder.per_function_section(sections).per_data_object_section(data_sections);
         let mut module = ObjectModule::new(builder);
         let unwind = UnwindContext::new(&mut module).map_err(CodegenError::Backend)?;
         let built = start.elapsed();
@@ -5541,52 +5570,99 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             return Ok(());
         }
         let declared = program.into_iter().any(|it| declares_global_allocator(db, it));
-        let to = |default, declared_one| if declared { declared_one } else { default };
-        let entries = [
-            ("__rust_alloc", to("__rdl_alloc", "__ra_jit_global_alloc"), 2, true),
-            ("__rust_dealloc", to("__rdl_dealloc", "__ra_jit_global_dealloc"), 3, false),
-            ("__rust_realloc", to("__rdl_realloc", "__ra_jit_global_realloc"), 4, true),
-            (
-                "__rust_alloc_zeroed",
-                to("__rdl_alloc_zeroed", "__ra_jit_global_alloc_zeroed"),
-                2,
-                true,
-            ),
-            ("__rust_alloc_error_handler", "__rdl_alloc_error_handler", 2, false),
-            ("__rust_no_alloc_shim_is_unstable_v2", "", 0, false),
-        ];
-        for (name, default, params, returns) in entries {
-            let mut sig = self.module.make_signature();
-            sig.params.extend((0..params).map(|_| AbiParam::new(ptr())));
-            sig.returns.extend(returns.then(|| AbiParam::new(ptr())));
-            let id = self
-                .module
-                .declare_function(name, Linkage::Export, &sig)
-                .map_err(|e| CodegenError::Backend(e.to_string()))?;
-            let target = (!default.is_empty()).then(|| self.import(default, &sig)).transpose()?;
-            let mut ctx = self.module.make_context();
-            ctx.func.signature = sig;
-            let mut builder_ctx = std::mem::take(&mut self.builder_ctx);
-            let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            let args = builder.block_params(block).to_vec();
-            let results = match target {
-                Some(target) => {
-                    let callee = self.module.declare_func_in_func(target, builder.func);
-                    let call = builder.ins().call(callee, &args);
-                    builder.inst_results(call).to_vec()
-                }
-                None => Vec::new(),
-            };
-            builder.ins().return_(&results);
-            builder.seal_all_blocks();
-            builder.finalize(self.module.isa().frontend_config());
-            self.builder_ctx = builder_ctx;
-            self.define_shim(id, &mut ctx)?;
+        for (name, ours, params, returns) in ALLOCATOR_ENTRIES {
+            let default = format!("__rdl_{}", name.trim_start_matches("__rust_"));
+            let target = if declared { ours } else { &default };
+            self.define_forwarding(name, Linkage::Export, Some(target), params, returns)?;
+        }
+        self.define_forwarding(
+            "__rust_alloc_error_handler",
+            Linkage::Export,
+            Some("__rdl_alloc_error_handler"),
+            2,
+            false,
+        )?;
+        self.define_forwarding(
+            "__rust_no_alloc_shim_is_unstable_v2",
+            Linkage::Export,
+            None,
+            0,
+            false,
+        )
+    }
+
+    /// rustc's entries of the global allocator in a program linked with rustc's code whose
+    /// `#[global_allocator]` is in one of `crates`, going to the functions rust-analyzer's
+    /// expansion exports, which are compiled with the rest. rustc's expansion has the
+    /// allocator's methods inlined into them at opt-level 1 and up, so they run the source as
+    /// rustc compiled it, and nothing else calls those methods. A program whose shim already
+    /// goes to ours (a stand-in's forwarding allocator, `stub.rs`) defines that function.
+    fn define_rustc_allocator_entries(&mut self, crates: &FxHashSet<Crate>) -> Result<()> {
+        let db = self.db;
+        if self.symbols.nothing_of_rustc() || self.symbols.defines(ALLOCATOR_ENTRIES[0].1) {
+            return Ok(());
+        }
+        for &krate in crates {
+            if !declares_global_allocator(db, krate) {
+                continue;
+            }
+            for (name, ours, params, returns) in ALLOCATOR_ENTRIES {
+                let Some(rustcs) = self.symbols.path(&format!("__rustc::{name}")) else {
+                    continue;
+                };
+                let Some(func) = global_allocator_export(db, krate, ours) else {
+                    let krate = fncache::crate_name(db, krate);
+                    refused!(
+                        "`#[global_allocator]` of crate `{krate}` exports no `{ours}`: rustc's \
+                         `{name}` would run its allocator as rustc compiled it"
+                    );
+                };
+                self.wanted.push(func);
+                self.define_forwarding(&rustcs, Linkage::Hidden, Some(ours), params, returns)?;
+            }
         }
         Ok(())
+    }
+
+    /// Defines `name`, of `params` pointer-sized arguments and a pointer returned if `returns`,
+    /// as a call of `target` with them, or as nothing.
+    fn define_forwarding(
+        &mut self,
+        name: &str,
+        linkage: Linkage,
+        target: Option<&str>,
+        params: usize,
+        returns: bool,
+    ) -> Result<()> {
+        let mut sig = self.module.make_signature();
+        sig.params.extend((0..params).map(|_| AbiParam::new(ptr())));
+        sig.returns.extend(returns.then(|| AbiParam::new(ptr())));
+        let id = self
+            .module
+            .declare_function(name, linkage, &sig)
+            .map_err(|e| CodegenError::Backend(e.to_string()))?;
+        let target = target.map(|it| self.import(it, &sig)).transpose()?;
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut builder_ctx = std::mem::take(&mut self.builder_ctx);
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        let args = builder.block_params(block).to_vec();
+        let results = match target {
+            Some(target) => {
+                let callee = self.module.declare_func_in_func(target, builder.func);
+                let call = builder.ins().call(callee, &args);
+                builder.inst_results(call).to_vec()
+            }
+            None => Vec::new(),
+        };
+        builder.ins().return_(&results);
+        builder.seal_all_blocks();
+        builder.finalize(self.module.isa().frontend_config());
+        self.builder_ctx = builder_ctx;
+        self.define_shim(id, &mut ctx)
     }
 
     /// A function of ours that could not be compiled and that something in the object calls,
@@ -8028,6 +8104,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 
     fn pass_mode(&self, layout: &Layout, is_ret: bool) -> Result<PassMode> {
+        if let BackendRepr::Memory { sized: false } = layout.backend_repr {
+            // rustc's `make_indirect` of an unsized argument; nothing returns one.
+            if is_ret {
+                unsupported!("an unsized value returned");
+            }
+            return Ok(PassMode::IndirectUnsized);
+        }
         if layout.is_zst() {
             return Ok(PassMode::Ignore);
         }
@@ -8167,6 +8250,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             self.wide_ints_on_stack(&mut abi)?;
             self.wide_ints_after_registers(&mut abi)?;
             return Ok(abi);
+        }
+        let args: Vec<_> = args.into_iter().collect();
+        if args.iter().any(|&ty| self.is_unsized(ty)) {
+            unsupported!("an unsized value passed in calling convention {abi:?}");
         }
         if self.cg.target.call_conv == isa::CallConv::WindowsFastcall {
             if matches!(abi, ExternAbi::SysV64 { .. }) {
@@ -8321,6 +8408,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 PassMode::Spread { .. } => unreachable!("only the Rust ABI spreads lanes"),
                 PassMode::SpilledPair { .. } => unreachable!("only the stack spills a pair"),
                 PassMode::SkippingPair { .. } => unreachable!("only AAPCS64 skips registers"),
+                PassMode::IndirectUnsized => {
+                    unreachable!("only the Rust ABI passes unsized values")
+                }
             };
             let aggregate = matches!(mode, PassMode::Cast(_) | PassMode::CastPair(..));
             let in_registers = match (int_regs.checked_sub(ints), sse_regs.checked_sub(sses)) {
@@ -8770,6 +8860,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 params.extend((0..count).map(|_| AbiParam::new(unit)));
             }
             PassMode::Indirect => params.push(AbiParam::new(ptr())),
+            PassMode::IndirectUnsized => {
+                params.extend([AbiParam::new(ptr()), AbiParam::new(ptr())])
+            }
             PassMode::Spread { .. } => params.push(AbiParam::new(types::F64)),
             PassMode::OnStack { size, padded } => {
                 params.extend(padded.then(|| copied(8)));
@@ -8874,6 +8967,12 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 self.copy(copy, addr, layout.size);
                 values.push(copy);
             }
+            // The callee is handed the value where it is, as rustc does: the operand is a
+            // place moved out of, whose memory nothing reads again.
+            PassMode::IndirectUnsized => {
+                values.push(self.builder.ins().load(ptr(), MEM, addr, 0));
+                values.push(self.builder.ins().load(ptr(), MEM, addr, meta_at()));
+            }
             PassMode::OnStack { padded, .. } => {
                 if padded {
                     values.push(self.scratch());
@@ -8915,6 +9014,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let mut next = || values.next().expect("a value for every abi parameter");
         match mode {
             PassMode::Ignore | PassMode::Indirect | PassMode::OnStack { .. } => (),
+            PassMode::IndirectUnsized => {
+                let (data, meta) = (next(), next());
+                self.builder.ins().store(MEM, data, addr, 0);
+                self.builder.ins().store(MEM, meta, addr, meta_at());
+            }
             PassMode::Direct(_) => {
                 let value = next();
                 self.builder.ins().store(MEM, value, addr, 0);
@@ -9281,10 +9385,14 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 PassMode::Indirect | PassMode::OnStack { .. } => {
                     incoming.next().expect("indirect param")
                 }
+                PassMode::IndirectUnsized => self.scratch_pair(),
                 _ => self.stack_slot(layout),
             };
             self.receive(mode, &mut incoming, addr, layout);
-            self.locals.insert(local, LocalSlot { addr, borrowed: false });
+            // An unsized parameter's slot is where the value is and its metadata, as
+            // rustc's `LocalRef::UnsizedPlace`.
+            let borrowed = matches!(mode, PassMode::IndirectUnsized);
+            self.locals.insert(local, LocalSlot { addr, borrowed });
             if matches!(mode, PassMode::Indirect | PassMode::OnStack { .. }) {
                 self.note_passed_in_memory(body, local, addr);
             }
@@ -12368,7 +12476,29 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     }
 
     fn operands(&mut self, operands: &[Operand]) -> Result<Vec<(Value, Ty<'db>)>> {
-        operands.iter().map(|it| self.operand(it)).collect()
+        operands.iter().map(|it| self.argument(it)).collect()
+    }
+
+    /// An argument of a call. An unsized one (`unsized_fn_params`) is a place moved out of,
+    /// and is where a pair of its address and metadata is, which `PassMode::IndirectUnsized`
+    /// passes.
+    fn argument(&mut self, operand: &Operand) -> Result<(Value, Ty<'db>)> {
+        let (OperandKind::Copy(place) | OperandKind::Move(place)) = &operand.kind else {
+            return self.operand(operand);
+        };
+        let ty = self.operand_ty(operand)?;
+        if !self.is_unsized(ty) {
+            return self.operand(operand);
+        }
+        let PlaceRef { addr, meta: Some(meta), .. } = self.place_ref(place)? else {
+            unsupported!("unsized argument {ty:?} without metadata");
+        };
+        // What the operand reads, for `given_away`.
+        self.operand(operand)?;
+        let pair = self.scratch_pair();
+        self.builder.ins().store(MEM, addr, pair, 0);
+        self.builder.ins().store(MEM, meta, pair, meta_at());
+        Ok((pair, ty))
     }
 
     /// `Fn::call`, `FnMut::call_mut` or `FnOnce::call_once`. For a call expression MIR passes
@@ -12640,8 +12770,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         dst_ty: Ty<'db>,
     ) -> Result<()> {
         let receiver_layout = self.layout(receiver_ty)?;
-        if !matches!(receiver_layout.backend_repr, BackendRepr::ScalarPair { .. })
-            || receiver_layout.size.bytes_usize() != 2 * word()
+        // A `dyn Trait` taken by value is where the pair of its data pointer and vtable is
+        // (`argument`), as a fat pointer to it would be; rustc hands the method the data
+        // pointer as well.
+        let by_value = matches!(receiver_ty.kind(), TyKind::Dynamic(..));
+        if !by_value
+            && (!matches!(receiver_layout.backend_repr, BackendRepr::ScalarPair { .. })
+                || receiver_layout.size.bytes_usize() != 2 * word())
         {
             unsupported!("vtable call with receiver {receiver_ty:?}");
         }
@@ -13082,6 +13217,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 PassMode::Indirect | PassMode::OnStack { .. } => {
                     incoming.next().expect("indirect param")
                 }
+                PassMode::IndirectUnsized => self.scratch_pair(),
                 _ => self.stack_slot(&layout),
             };
             self.receive(mode, &mut incoming, addr, &layout);
@@ -13267,6 +13403,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     PassMode::Indirect | PassMode::OnStack { .. } => {
                         incoming.next().expect("indirect param")
                     }
+                    PassMode::IndirectUnsized => self.scratch_pair(),
                     _ => self.stack_slot(&layout),
                 };
                 self.receive(mode, &mut incoming, addr, &layout);
@@ -13462,7 +13599,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         let sret = sig.params.first().is_some_and(|it| it.purpose == ArgumentPurpose::StructReturn);
         let count = match mode {
             PassMode::Ignore => 0,
-            PassMode::Pair(..) => 2,
+            PassMode::Pair(..) | PassMode::IndirectUnsized => 2,
             PassMode::SpilledPair { spilled, .. } => {
                 spilled.iter().map(|it| it.map_or(1, |padded| 1 + usize::from(padded))).sum()
             }

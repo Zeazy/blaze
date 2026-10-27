@@ -1015,6 +1015,12 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
   fd with a server killed after its first five derives said `fd::run: frontend: mir:
   MissingFunctionDefinition`, as `Opts::parse` had no `#[derive(Parser)]` impl to resolve to;
   now it says the server failed to expand `Parser` of clap_derive, and how it exited.
+- The daemon's own link passes the linker what `-C link-arg` and `-C link-args` say in
+  `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or the configuration's `rustflags`, after the native
+  libraries as rustc does; it left them out. A program linked with
+  `-Wl,-no_compact_unwind` had `__unwind_info` all the same, and a `-Wl,-headerpad` was not
+  the least room the splice's header file asks for (`harness/nocompact.py`,
+  `harness/headerpad.py` on macOS).
 - A red train opens or comments on the "Release train is red" issue again: train_issue.py read
   each harness job's log with `gh api`, which the runner's gh refuses without
   `--allow-escape-sequences`, so the `train issue` job failed and no issue was opened.

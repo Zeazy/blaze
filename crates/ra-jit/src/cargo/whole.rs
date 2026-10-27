@@ -612,9 +612,9 @@ fn not_loaded(cwd: &Path, checkout: &Checkout, reason: &str) -> String {
             refused.join("\n  ")
         );
     }
-    let last = said.lines().rev().find(|it| it.starts_with("Error"));
-    let last = last.map_or(reason, |it| it.strip_prefix("Error: ").unwrap_or(it));
-    format!("could not build {named}: {last} (what blaze said is in {shown})")
+    let last = super::daemon::last_error(&said);
+    let last = last.as_deref().unwrap_or(reason).replace('\n', "\n  ");
+    format!("could not build {named}: {last}\n(what blaze said is in {shown})")
 }
 
 /// The log of the daemon's worker for the package in `project`.

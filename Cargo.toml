@@ -68,6 +68,8 @@ salsa-macros = { path = "vendor/salsa-macros" }
 salsa-macro-rules = { path = "vendor/salsa-macro-rules" }
 # Links the pinned LLVM statically, with a static libstdc++ on Linux (vendor/llvm-sys/SOURCE.md).
 llvm-sys = { path = "vendor/llvm-sys" }
+# Statics that name one section share it, as in LLVM's objects (vendor/cranelift-object/SOURCE.md).
+cranelift-object = { path = "vendor/cranelift-object" }
 
 # line-index = { path = "lib/line-index" }
 # la-arena = { path = "lib/la-arena" }

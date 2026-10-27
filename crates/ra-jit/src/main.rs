@@ -752,42 +752,6 @@ fn defined_symbols(path: &Path) -> anyhow::Result<FxHashSet<String>> {
     Ok(names)
 }
 
-/// The names the executable at `path` defines, read once for each file a link writes: a
-/// splice adds to the file in place, where a link writes a new one.
-fn kept_names(path: &Path) -> Option<Arc<FxHashSet<String>>> {
-    #[cfg(unix)]
-    {
-        use object::{Object as _, ObjectSymbol as _};
-        use std::os::unix::fs::MetadataExt as _;
-        type Kept = FxHashMap<PathBuf, ((u64, u64), Arc<FxHashSet<String>>)>;
-        static KEPT: std::sync::LazyLock<std::sync::Mutex<Kept>> =
-            std::sync::LazyLock::new(Default::default);
-        let file = std::fs::metadata(path).ok()?;
-        let key = (file.dev(), file.ino());
-        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, names)) = kept.get(path)
-            && *at == key
-        {
-            return Some(names.clone());
-        }
-        let bytes = std::fs::read(path).ok()?;
-        let file = object::File::parse(&*bytes).ok()?;
-        let macho = file.format() == object::BinaryFormat::MachO;
-        let names = file.symbols().filter(|it| it.is_definition()).filter_map(|it| {
-            let name = it.name().ok()?;
-            Some(if macho { name.strip_prefix('_').unwrap_or(name) } else { name }.to_owned())
-        });
-        let names = Arc::new(names.collect::<FxHashSet<_>>());
-        kept.insert(path.to_owned(), (key, names.clone()));
-        Some(names)
-    }
-    #[cfg(not(unix))]
-    {
-        _ = path;
-        None
-    }
-}
-
 /// The [`SymbolTable::generation`] and the checkout that paths were found with.
 type SharedKey = (u64, PathBuf, Option<PathBuf>);
 
@@ -836,7 +800,7 @@ impl<'a> Resolver<'a> {
             .splice
             .as_deref()
             .filter(|_| linked.is_none() && table.is_empty() && args.patch.is_some())
-            .and_then(kept_names);
+            .and_then(splice::kept_names);
         let (root, base) = (args.checkout.clone(), args.base.clone());
         let debug = args.debug;
         let apart = (debug.kept != plan::Kept::Linked).then(|| args.out.clone());

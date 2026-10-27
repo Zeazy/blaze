@@ -8861,7 +8861,10 @@ fn run_holding(
     // daemon's.
     let library = ahead.then(|| built_library(&vfs, emits.triple()));
     match toolchain_identity(&vfs, library.as_ref().unwrap_or(&args.symbol_files)) {
-        Some(toolchain) => ra_jit_store::compiles_against(&toolchain),
+        Some(toolchain) => {
+            ra_jit_store::compiles_against(&toolchain);
+            std::thread::spawn(ra_jit_store::check_packs);
+        }
         None => eprintln!("store: the toolchain of the library cannot be told from another"),
     }
     // A build with nothing of rustc's starts from the standard library, which a release ships.

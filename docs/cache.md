@@ -131,8 +131,13 @@ starts over. One that finds a newer format leaves it alone and runs without a st
 
 ### Integrity and crashes
 
-A pack's hash is checked the first time a process reads it, and each value carries a
-checksum that is checked every time it is read. A pack that fails either check, or has a
+Opening the store reads the index at the start of each pack and none of the values, and a
+process keeps 16 bytes of each key in memory (the first 8 bytes of the key, the pack and
+the entry), reading the rest of the entry from the pack when it looks the key up. A daemon
+checks the hash of every pack once it starts, beside loading the workspace; any other
+process, such as the wrapper cargo starts for each build script, checks a pack's hash the
+first time it finds a key in it. Each value carries a checksum that is checked every time
+it is read. A pack that fails either check, or has a
 block that does not unpack, is removed and what was in it is compiled again. A sealed pack
 appears by a rename after it is written and synced, and the open pack it was sealed from is
 removed after that. An open pack left by a daemon that died is sealed up to its last whole

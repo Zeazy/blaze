@@ -201,7 +201,7 @@ pub(crate) fn tests(
         say::error(&format!("the tests run in a sandbox, which can't be made here: {why}"));
         say::note(&format!(
             "`{}=off` runs the tests of this command outside a sandbox, as cargo does",
-            sandboxed::VAR
+            crate::sandbox::VAR_BLAZE
         ));
         return Ok(FAILED);
     }
@@ -220,7 +220,7 @@ pub(crate) fn tests(
     let mut results = affected::on().then(Results::open).flatten();
     if affected::on() && results.is_none() {
         say::note(
-            "no store (`RA_JIT_CACHE=off`): no test's pass is kept, and every test the daemon \
+            "no store (`BLAZE_CACHE=off`): no test's pass is kept, and every test the daemon \
              built runs",
         );
     }
@@ -250,7 +250,7 @@ pub(crate) fn tests(
         let identity = env.as_deref().filter(|_| affected::on()).map(sandboxed::identity_of);
         let manifest = opt_out.manifest.display();
         let why_outside = match (sandboxing, opt_out.all) {
-            (false, _) => format!("`{}=off`", sandboxed::VAR),
+            (false, _) => format!("`{}=off`", crate::sandbox::VAR_BLAZE),
             (true, true) => format!("`tests = false` under `{}` in {manifest}", sandboxed::TABLE),
             (true, false) => format!(
                 "its workspace has not opted into sandboxed tests ({})",

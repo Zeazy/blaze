@@ -579,7 +579,7 @@ impl Wasm {
             Some(module) => {
                 if stats {
                     eprintln!(
-                        "ra-jit: a proc-macro module's machine code the store kept: {}",
+                        "blaze: a proc-macro module's machine code the store kept: {}",
                         path.display()
                     );
                 }
@@ -589,7 +589,7 @@ impl Wasm {
                 if stats {
                     let store = if store.is_some() { "" } else { " (no store yet)" };
                     eprintln!(
-                        "ra-jit: Cranelift compiles the proc-macro module {}{store}",
+                        "blaze: Cranelift compiles the proc-macro module {}{store}",
                         path.display()
                     );
                 }
@@ -621,7 +621,7 @@ impl Wasm {
             store.insert(&code_key(&self.digest), &code);
             store.flush();
             if std::env::var_os("RA_JIT_STATS").is_some() {
-                eprintln!("ra-jit: the store keeps the machine code of {}", self.path.display());
+                eprintln!("blaze: the store keeps the machine code of {}", self.path.display());
             }
         }
     }

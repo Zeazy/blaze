@@ -387,7 +387,7 @@ pub(crate) struct Sandbox {
 impl Sandbox {
     /// The command that runs `program` in it.
     pub(crate) fn command(&self, program: &Path) -> anyhow::Result<Command> {
-        let mut command = Command::new(std::env::current_exe().context("finding ra-jit itself")?);
+        let mut command = Command::new(std::env::current_exe().context("finding blaze itself")?);
         command.arg(sandbox::COMMAND).arg(&self.spec_file).arg("--").arg(program);
         Ok(command)
     }
@@ -420,7 +420,7 @@ pub(crate) fn denied(lines: &[Line], shown: &str, opt_out: &OptOut) -> Denied {
     let ways = |names: &str| {
         format!(
             "`unsandboxed-tests = [{names}]` under `{TABLE}` in {manifest} (`tests = false` for \
-             every test of the package), or `{VAR}=off` for every test of the command"
+             every test of the package), or `BLAZE_SANDBOX=off` for every test of the command"
         )
     };
     let mut denied = Denied { tests: BTreeSet::new(), unknown: false };

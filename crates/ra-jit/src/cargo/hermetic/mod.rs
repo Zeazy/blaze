@@ -121,7 +121,7 @@ pub(crate) fn closure_for(
     if all.is_err()
         && let Some(remote) = &remote
     {
-        let dir = super::daemon::store().context("RA_JIT_CACHE turns the store off")?;
+        let dir = super::daemon::store().context("BLAZE_CACHE turns the store off")?;
         crate::remote::Shared::lazily(&dir, remote, closure::PROJECT)?.pull()?;
         all = closure::closure_of(&wanted);
     }
@@ -143,7 +143,7 @@ fn remote() -> Option<String> {
 /// A lock of blaze's store that one process holds at a time, beside the store's own files,
 /// until it is dropped.
 fn held_by_one(what: &str) -> anyhow::Result<std::fs::File> {
-    let dir = super::daemon::store().context("RA_JIT_CACHE turns the store off")?;
+    let dir = super::daemon::store().context("BLAZE_CACHE turns the store off")?;
     std::fs::create_dir_all(&dir)?;
     let lock = std::fs::File::create(dir.join(format!("taking-{what}")))
         .with_context(|| format!("the lock of {} beside blaze's store", dir.display()))?;

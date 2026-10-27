@@ -239,7 +239,7 @@ impl Limit {
             Ok(text) if text == "off" => Ok(Limit::Off),
             Ok(text) => parse_size(&text)
                 .map(Limit::Bytes)
-                .ok_or_else(|| format!("RA_JIT_CACHE_MAX=`{text}` is neither a size nor `off`")),
+                .ok_or_else(|| format!("BLAZE_CACHE_MAX=`{text}` is neither a size nor `off`")),
         }
     }
 
@@ -1327,7 +1327,7 @@ impl Tuning {
         let seal_at = match std::env::var("RA_JIT_CACHE_SEAL_AT") {
             Err(_) => SEAL_AT,
             Ok(text) => parse_size(&text).filter(|&it| it != 0).ok_or_else(|| {
-                io::Error::other(format!("RA_JIT_CACHE_SEAL_AT=`{text}` is not a size"))
+                io::Error::other(format!("BLAZE_CACHE_SEAL_AT=`{text}` is not a size"))
             })?,
         };
         Ok(Tuning { seal_at, limit })

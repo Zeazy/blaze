@@ -64,7 +64,7 @@ pub(crate) fn make(
     let target = target()?;
     anyhow::ensure!(
         target.exists(),
-        "{} is not installed next to ra-jit; `cargo {}` are not changed",
+        "{} is not installed next to blaze; `cargo {}` are not changed",
         target.display(),
         names.join("` and `cargo ")
     );

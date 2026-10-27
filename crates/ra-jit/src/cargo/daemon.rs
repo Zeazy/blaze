@@ -56,7 +56,7 @@ fn memory_max() -> Result<Option<u64>, String> {
         Ok(text) if text == "off" => Ok(None),
         Ok(text) => ra_jit_store::parse_size(&text)
             .map(Some)
-            .ok_or_else(|| format!("RA_JIT_MEMORY_MAX=`{text}` is neither a size nor `off`")),
+            .ok_or_else(|| format!("BLAZE_MEMORY_MAX=`{text}` is neither a size nor `off`")),
     }
 }
 
@@ -82,7 +82,7 @@ fn spares() -> Result<Spares, String> {
         Err(_) => Ok(Spares::Asked),
         Ok(text) if text == "0" => Ok(Spares::Never),
         Ok(text) if text == "ready" => Ok(Spares::Ready),
-        Ok(text) => Err(format!("RA_JIT_SPARE=`{text}` is neither `0` nor `ready`")),
+        Ok(text) => Err(format!("BLAZE_SPARE=`{text}` is neither `0` nor `ready`")),
     }
 }
 
@@ -1051,7 +1051,7 @@ pub(crate) fn home() -> anyhow::Result<PathBuf> {
         return Ok(Path::new(&runtime).join("ra-jit"));
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    Ok(Path::new(&home.context("no RA_JIT_HOME, XDG_RUNTIME_DIR or HOME")?).join(".cache/ra-jit"))
+    Ok(Path::new(&home.context("no BLAZE_HOME, XDG_RUNTIME_DIR or HOME")?).join(".cache/ra-jit"))
 }
 
 /// The disk store of the user's builds: the directory `RA_JIT_CACHE` names, none when it
@@ -1463,7 +1463,7 @@ impl Daemon {
             let Some(worker) = workers.remove(&id) else { continue };
             eprintln!(
                 "worker {id} of {} stopped: the workers hold {} MB, over the {} MB of \
-                 RA_JIT_MEMORY_MAX, and it was asked longest ago",
+                 BLAZE_MEMORY_MAX, and it was asked longest ago",
                 worker.project.display(),
                 all >> 20,
                 most >> 20

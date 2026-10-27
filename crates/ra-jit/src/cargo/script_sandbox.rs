@@ -148,7 +148,7 @@ fn with_own_rustc(
     let dir = scratch.join(OWN_RUSTC);
     std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
     let link = dir.join(format!("{}{}", crate::as_rustc::NAME, std::env::consts::EXE_SUFFIX));
-    let exe = std::env::current_exe().context("finding ra-jit itself")?;
+    let exe = std::env::current_exe().context("finding blaze itself")?;
     if std::fs::read_link(&link).ok().as_deref() != Some(&*exe) {
         _ = std::fs::remove_file(&link);
         #[cfg(unix)]
@@ -207,7 +207,7 @@ pub(crate) fn plan(script: &Script<'_>) -> anyhow::Result<Plan> {
     let package = script.package();
     let env = with_own_rustc(script.env, script.scratch)?;
     if !on_in(script.env) {
-        return Ok(Plan::Outside(format!("{}=off", sandboxed::VAR), env));
+        return Ok(Plan::Outside(format!("{}=off", crate::sandbox::VAR_BLAZE), env));
     }
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         // No running it outside instead: a build that can't keep its promise stops.
@@ -215,7 +215,7 @@ pub(crate) fn plan(script: &Script<'_>) -> anyhow::Result<Plan> {
             "the build script of `{package}` runs in a sandbox, and there is none on {} yet \
              (#257); `{}=off` runs build scripts and tests outside a sandbox, as cargo does",
             std::env::consts::OS,
-            sandboxed::VAR
+            crate::sandbox::VAR_BLAZE
         );
     }
     let root = workspace_of(script)?;
@@ -252,7 +252,7 @@ pub(crate) fn plan(script: &Script<'_>) -> anyhow::Result<Plan> {
     let programs = ["RUSTC", "RUSTDOC", "CARGO"];
     let programs = programs.into_iter().filter_map(var).filter(|it| !it.is_empty());
     let programs = programs.filter_map(|it| Path::new(it).parent().map(Path::to_owned));
-    let exe = std::env::current_exe().context("finding ra-jit itself")?;
+    let exe = std::env::current_exe().context("finding blaze itself")?;
     let programs = programs.chain(exe.parent().map(Path::to_owned));
     let path = script.var("PATH").unwrap_or_default().split(':').map(PathBuf::from);
     // One reached through a link (NixOS's `/run/current-system/sw/bin`) is seen where the link
@@ -535,7 +535,7 @@ pub(crate) fn run(script: &Script<'_>, plan: &Plan, stdin: Stdio) -> anyhow::Res
         .with_context(|| format!("writing {}", spec_file.display()))?;
     let record = spec.record.clone().context("a sandbox with no record")?;
     _ = std::fs::remove_file(&record);
-    let mut command = Command::new(std::env::current_exe().context("finding ra-jit itself")?);
+    let mut command = Command::new(std::env::current_exe().context("finding blaze itself")?);
     command.arg(sandbox::COMMAND).arg(&spec_file).arg("--").arg(script.real).args(script.args);
     command.current_dir(script.cwd).stdin(stdin);
     let mut output = command.output().with_context(|| running(script))?;
@@ -556,7 +556,7 @@ pub(crate) fn run(script: &Script<'_>, plan: &Plan, stdin: Stdio) -> anyhow::Res
                 "error: the build script of `{package}` runs in a sandbox, which can't be made \
                  here: {why}\n`{}=off` runs build scripts and tests outside a sandbox, as cargo \
                  does\n",
-                sandboxed::VAR
+                crate::sandbox::VAR_BLAZE
             )
             .into_bytes(),
         );

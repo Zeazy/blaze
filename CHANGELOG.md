@@ -1196,6 +1196,9 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
   `harness/unittests.py` does), and that workspace patches salsa to `vendor/salsa*` as the root
   does.
 
+- Boxed recursive async calls resolve before inference writeback, and initialized bindings
+  are registered before temporary cleanup, preserving coroutine drop flags and field layout.
+
 - A local that no place of its body mentions has no stack slot. rust-analyzer's MIR gives a
   closure's body a local for each capture and for each binding of the function it is written
   in, and a closure called by reference never touches them; each had a slot, so a closure

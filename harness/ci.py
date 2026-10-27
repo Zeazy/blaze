@@ -49,6 +49,7 @@ EVERYWHERE = on()
 # The order is the order of each part's run. A harness in the fast tier needs a line in FAST.
 HARNESSES = [
     ("core", ["difftest.py", "corpus", "--bin", "runner", "--crate", "cases", "--layouts"], {}, EVERYWHERE, 2),
+    ("core", ["difftest.py", "mixfutures", "--bin", "runner", "--crate", "futs", "--mixed", "7"], {}, EVERYWHERE, 2),
     ("core", ["programs.py"], {}, EVERYWHERE, 1),
     # The daemon compiles every function of both programs, main too, and LLVM is optimizing: an
     # edit of what both use has to reach each program, whatever its callers had built into them.
@@ -145,6 +146,7 @@ HARNESSES = [
 X64, MAC = "linux-x86_64", "macos"
 FAST = {
     "difftest.py corpus": (34, ()),
+    "difftest.py mixfutures": (60, ()),
     "programs.py": (20, ()),
     "RA_JIT_ALONE=1 programs.py": (20, (X64,)),
     "breakers.py": (211, ()),

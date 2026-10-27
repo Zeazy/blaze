@@ -93,6 +93,14 @@ async fn nested(log: Log) -> usize {
     outer.0.len() + buffer.iter().map(|&it| it as usize).sum::<usize>()
 }
 
+async fn recursive(log: &Log, depth: usize) -> usize {
+    let held = Noisy("recursive", log.clone());
+    pause().await;
+    let child = if depth == 0 { 0 } else { Box::pin(recursive(log, depth - 1)).await };
+    pause().await;
+    child + depth + held.0.len()
+}
+
 async fn panics(log: Log) -> usize {
     let before = Noisy("before", log.clone());
     pause().await;
@@ -138,6 +146,9 @@ pub fn run() -> Vec<String> {
         out.push(drive("in_loop", polls, in_loop));
         out.push(drive("nested", polls, nested));
         out.push(drive("panics", polls, panics));
+    }
+    for polls in [0, 1, 3, 4, 7, 8, 9] {
+        out.push(drive("recursive", polls, |log| async move { recursive(&log, 3).await }));
     }
     out
 }

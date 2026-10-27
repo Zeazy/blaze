@@ -265,6 +265,8 @@ fn infer_finalize<'db>(mut ctx: InferenceContext<'db>) -> InferenceResult<'db> {
 
     ctx.handle_opaque_type_uses();
 
+    ctx.table.select_obligations_where_possible();
+
     ctx.merge_anon_consts();
 
     ctx.resolve_all()

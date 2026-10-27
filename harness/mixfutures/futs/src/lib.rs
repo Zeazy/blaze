@@ -199,6 +199,41 @@ async fn recover(e: String) {
     log(format!("recovered {e}"));
 }
 
+struct Prepared {
+    scratch: [u64; 48],
+    pending: bool,
+    marker: String,
+}
+
+impl Future for Prepared {
+    type Output = Result<String, ()>;
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        if std::mem::replace(&mut self.pending, false) {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(format!("{}-{}", self.scratch[1], self.marker)))
+        }
+    }
+}
+
+fn prepare(n: u64) -> Result<Prepared, ()> {
+    if n == 0 {
+        return Err(());
+    }
+    Ok(Prepared { scratch: [7; 48], pending: true, marker: "held".into() })
+}
+
+async fn consume(prepared: Prepared) -> Result<String, ()> {
+    prepared.await
+}
+
+pub async fn transferred(n: &u64) -> Result<u64, ()> {
+    let prepared = prepare(*n)?;
+    let worker = consume(prepared).await?;
+    Ok(*n + worker.len() as u64)
+}
+
 /// Each arm moves its payload out of what the match waited for, and one arm awaits again.
 pub async fn retried(mut n: u32) -> &'static str {
     loop {
@@ -216,6 +251,10 @@ pub fn run() {
     println!("{:?}", block_on(bound(0)));
     println!("{:?}", block_on(constructed(2)).map(|it| it.1));
     println!("{:?}", block_on(constructed(0)).map(|it| it.1));
+    println!("{:?}", block_on(transferred(&31)));
+    println!("{:?}", block_on(transferred(&0)));
+    poll_then_drop(transferred(&31), 0);
+    poll_then_drop(transferred(&31), 1);
     println!("{}", block_on(retried(1)));
     poll_then_drop(sums(2), 2);
     poll_then_drop(bound(4), 2);

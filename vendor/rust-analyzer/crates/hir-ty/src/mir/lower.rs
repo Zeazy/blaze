@@ -3510,10 +3510,6 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                         let binding = *id;
                         self.extend_temporaries(*expr_id, *pat, self.drop_scopes.len() - 1);
                         let local = self.binding_local(binding)?;
-                        // rustc's storage_live_binding: the storage starts here, and the drop of
-                        // the value is scheduled only once it holds one, after the initializer
-                        // and the temporaries it extends, so that nothing unwinding out of the
-                        // initializer drops it.
                         let at = MirSpan::BindingId(binding);
                         self.push_statement(
                             current,
@@ -3531,13 +3527,13 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                         // temporaries are dropped: what the value borrows from a `match` arm's
                         // bindings, dropped as the arm ends, must outlive them.
                         self.push_fake_read(c, local.into(), MirSpan::PatId(*pat));
-                        current = temporaries.pop_and_drop(self, c, span);
                         if let Some(scope) =
                             self.drop_scopes.iter_mut().rev().find(|it| !it.temporaries)
                             && !scope.locals.contains(&local)
                         {
                             scope.locals.push(local);
                         }
+                        current = temporaries.pop_and_drop(self, c, span);
                         continue;
                     }
                     if let Some(expr_id) = initializer {

@@ -935,7 +935,7 @@ impl Shapes {
         let count = u32::from_le_bytes(value.get(..4)?.try_into().ok()?) as usize;
         let table = value.get(4..4 + count.checked_mul(16)?)?;
         let mut spans = Spans::default();
-        for shape in table.chunks_exact(16) {
+        for shape in table.as_chunks::<16>().0 {
             let field = |at: usize| u32::from_le_bytes(shape[at..at + 4].try_into().unwrap());
             let span = Span {
                 range: range(field(0), field(4)),

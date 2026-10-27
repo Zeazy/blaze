@@ -23,6 +23,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use ra_jit_store::write_file_whole;
 use sha2::{Digest as _, Sha256};
 
+use crate::content::hex;
+
 /// The word the last line of a signed list starts with.
 const SIGNED: &str = "signed";
 
@@ -318,10 +320,6 @@ fn read_key(file: &Path) -> anyhow::Result<SigningKey> {
 /// one for another, and the turn, so that nobody without the key makes an old list new.
 fn signed_bytes(name: &str, turn: u64, body: &str) -> Vec<u8> {
     format!("ra-jit list 2\n{name}\n{turn}\n{body}").into_bytes()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {

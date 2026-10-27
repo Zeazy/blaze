@@ -163,7 +163,7 @@ pub(crate) fn missing_server() -> String {
          macros only for its own. Build it there from a blaze checkout with `ra-jit \
          vendor/proc-macro-srv --crate rust_analyzer_proc_macro_srv --crate proc_macro --out \
          <scratch>/server.o --exe {beside}` (what `.github/scripts/build_release.py --server` \
-         runs; the releases ship it on Linux), or have rustc build the load's proc macros \
+         runs; the releases ship it on Linux and macOS), or have rustc build the load's proc macros \
          with `{SERVER}=0`"
     )
 }
@@ -344,7 +344,7 @@ const WASM_DIR: &str = "ra-jit-wasm";
 fn described_at(library: &Path, description: &str) -> Result<PathBuf, String> {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(description.as_bytes());
-    let digest: String = digest[..8].iter().map(|it| format!("{it:02x}")).collect();
+    let digest = crate::content::hex(&digest[..8]);
     let stem = library.file_stem().and_then(OsStr::to_str).ok_or("a library unnamed")?;
     let dir = library.parent().ok_or("a library without a directory")?;
     let dir = dir.join(WASM_DIR).join(format!("{stem}-{digest}"));

@@ -380,7 +380,9 @@ the target directory's build directory (its dependencies' `OUT_DIR`s), a system 
 `build-script-link-dirs`; a `rustc-link-arg` is one of a short list (`-pthread`, `-rdynamic`,
 `-Wl,--as-needed`, `-Wl,-z,now`, `-Wl,-soname,NAME`, `-lNAME`, ...) or an rpath to `$ORIGIN`
 or a directory a search may name; a `rustc-env` sets no variable cargo or rustc gives the crate
-itself (`CARGO_PKG_*`, `CARGO_MANIFEST_DIR`, `CARGO_CFG_*`, `OUT_DIR`, `RUSTC*`, ...). Anything
+itself (`CARGO_PKG_*`, `CARGO_MANIFEST_DIR`, `OUT_DIR`, `RUSTC*`, ...); what cargo gives only
+build scripts (`CARGO_CFG_*`, `CARGO_FEATURE_*`, `CARGO_ENCODED_RUSTFLAGS`) it may forward, as
+rav1e's does. Anything
 else fails the build, naming the script and each line. Over the bench corpus's 587 runs the
 rules refuse none (`bench/results/2026-10-27-bscache/directives.md`).
 

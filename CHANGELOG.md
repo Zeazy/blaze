@@ -1001,6 +1001,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- A crate blaze builds itself (a proc macro, a build script, or what either links) reads the
+  variables its build script set with `cargo:rustc-env`: `mime_guess`'s
+  `MIME_TYPES_GENERATED_PATH`, so `rust-embed-impl` builds. blaze kept only cargo's own
+  `CARGO_*` and `OUT_DIR`; it now reads the names from the script's output, `output` in cargo's
+  layout of `target` and `run/stdout` in the build-dir layout.
 - The borrow checker: lifetime elision counts none of the impl's lifetimes in a parameter
   that writes `Self`, as rustc counts only what a parameter's type writes or elides, so
   `fn store(self, db: &dyn Db) -> &Store` in `impl Id<'_>` returns a borrow of `db`. It

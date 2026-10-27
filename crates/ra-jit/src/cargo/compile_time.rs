@@ -941,7 +941,6 @@ fn keys(graph: &UnitGraph) -> Vec<String> {
         let mut deps: Vec<(String, String)> =
             deps.into_iter().map(|(name, it)| (name, key(graph, it, keys))).collect();
         deps.sort();
-        let mut hash = hash;
         for (name, key) in deps {
             hash.update(name.as_bytes());
             hash.update(key.as_bytes());

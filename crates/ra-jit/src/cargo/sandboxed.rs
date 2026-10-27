@@ -33,7 +33,10 @@ use super::{
     say,
     state::{Program, State},
 };
-use crate::sandbox::{self, Line, Reached, Spec};
+use crate::{
+    content::hex,
+    sandbox::{self, Line, Reached, Spec},
+};
 
 pub(crate) const VAR: &str = sandbox::VAR;
 
@@ -266,8 +269,7 @@ pub(crate) fn identity_of(env: &[(String, String)]) -> String {
         hash.update(value.as_bytes());
         hash.update([0]);
     }
-    let hex: String = hash.finalize().iter().take(8).map(|it| format!("{it:02x}")).collect();
-    format!("~{hex}")
+    format!("~{}", hex(&hash.finalize()[..8]))
 }
 
 /// The target directory `executable` is in: the nearest directory above it that cargo marked
@@ -483,7 +485,7 @@ pub(crate) fn digest(path: &Path) -> String {
     } else {
         hash.update(b"o");
     }
-    hash.finalize().iter().take(16).map(|it| format!("{it:02x}")).collect()
+    hex(&hash.finalize()[..16])
 }
 
 #[cfg(test)]

@@ -320,7 +320,10 @@ pub(crate) fn toolchain_rustc_of(program: &OsStr) -> Option<PathBuf> {
 /// for the process it started and is not known without that. A proxy is rustup's own binary
 /// under another name, or a script that starts it: Homebrew's rustup installs `rustc` as a
 /// script beside no toolchain, which was taken for one with no standard library.
-fn toolchain_rustc(program: &OsStr, var: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+pub(crate) fn toolchain_rustc(
+    program: &OsStr,
+    var: &dyn Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
     let found = if Path::new(program).components().count() > 1 {
         PathBuf::from(program)
     } else {

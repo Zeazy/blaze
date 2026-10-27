@@ -619,7 +619,7 @@ fn key(sha256: &str) -> anyhow::Result<[u8; 32]> {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|it| format!("{it:02x}")).collect()
+    crate::content::hex(&Sha256::digest(bytes))
 }
 
 fn open_store(store: Option<&Path>) -> anyhow::Result<ra_jit_store::Store> {

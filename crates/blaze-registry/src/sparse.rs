@@ -15,10 +15,9 @@ use anyhow::{Context, bail};
 use rustc_hash::FxHashSet;
 use serde_derive::Deserialize;
 
-use crate::{
-    SourceId,
-    http::{Http, HttpNotSuccessful, Retry},
-};
+use blaze_source::SourceId;
+
+use crate::http::{Http, HttpNotSuccessful, Retry};
 
 /// The `config.json` at the root of an index.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -148,7 +147,7 @@ impl SparseIndex {
             *config = Some(found.clone());
             return Ok(Some(found));
         }
-        let read = match self.fetch(RegistryConfig::NAME, None)? {
+        let read = match crate::block_on(self.fetch(RegistryConfig::NAME, None))? {
             LoadResponse::Data { raw, .. } => {
                 let read: RegistryConfig = serde_json::from_slice(&raw)
                     .with_context(|| format!("the config.json of {}", self.base))?;
@@ -165,8 +164,14 @@ impl SparseIndex {
     }
 
     /// An index file, `path` under the index's URL: [`LoadResponse::CacheValid`] when the
-    /// cached copy of `index_version` is fresh or the server says it has not changed.
-    pub fn load(&self, path: &str, index_version: Option<&str>) -> anyhow::Result<LoadResponse> {
+    /// cached copy of `index_version` is fresh or the server says it has not changed. Asked of
+    /// the server, it waits without holding the thread, so that the files of a resolver's round
+    /// are fetched together.
+    pub async fn load(
+        &self,
+        path: &str,
+        index_version: Option<&str>,
+    ) -> anyhow::Result<LoadResponse> {
         let Some(config) = self.config()? else { return Ok(LoadResponse::NotFound) };
         if config.auth_required {
             bail!(
@@ -188,26 +193,34 @@ impl SparseIndex {
                 "last-modified" => Some(("if-modified-since", value.trim())),
                 _ => None,
             });
-        self.fetch(path, condition)
+        self.fetch(path, condition).await
     }
 
-    fn fetch(&self, path: &str, condition: Option<(&str, &str)>) -> anyhow::Result<LoadResponse> {
+    async fn fetch(
+        &self,
+        path: &str,
+        condition: Option<(&str, &str)>,
+    ) -> anyhow::Result<LoadResponse> {
         if self.offline {
             return Ok(LoadResponse::NotFound);
         }
         let url = format!("{}{path}", self.base);
         let mut headers = vec![("cargo-protocol", "version=1"), ("accept", "text/plain")];
         headers.extend(condition);
-        let answer = self.retry.run(|| {
-            let answer = self
-                .http
-                .get(&url, &headers)
-                .with_context(|| format!("download of {path} failed"))?;
-            match answer.status {
-                200 | 304 | 404 => Ok(answer),
-                _ => Err(HttpNotSuccessful::new(&url, &answer).into()),
-            }
-        });
+        let answer = self
+            .retry
+            .run_async(&*self.http, || {
+                let answer = self.http.get_async(&url, &headers);
+                async {
+                    let answer =
+                        answer.await.with_context(|| format!("download of {path} failed"))?;
+                    match answer.status {
+                        200 | 304 | 404 => Ok(answer),
+                        _ => Err(HttpNotSuccessful::new(&url, &answer).into()),
+                    }
+                }
+            })
+            .await;
         self.fresh().insert(path.to_owned());
         let answer = answer?;
         Ok(match answer.status {

@@ -24,7 +24,7 @@ curl -fsSL https://ix.dev/blaze | sh
 ```
 
 For macOS on Apple silicon and Linux, with or without Rust installed: blaze downloads the Rust it
-builds with once (about 100 to 135 MB), or uses rustup's. Rather use crates.io or Nix?
+builds with once (about 125 to 160 MB), or uses rustup's. Rather use crates.io or Nix?
 [Other ways to install](docs/install.md).
 
 ## Try it

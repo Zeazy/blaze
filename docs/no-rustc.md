@@ -149,8 +149,8 @@ The same goal seen from the machine blaze is installed on
 ([self-contained.md](self-contained.md), [#298](https://github.com/indexable-inc/blaze/issues/298)):
 installing is one `curl`, with no rustup, no toolchain pin and no cargo, and blaze resolves a
 project exactly as cargo does. Until K, J and M land, blaze keeps a toolchain of its own,
-private to it: the pinned nightly's `rustc`, `cargo`, `rust-std` and `rust-src` as the Rust project
-publishes them (96 to 133 MB), each piece removed as the step that ends its use lands. A
+private to it: the pinned nightly's `rustc`, `cargo`, `rust-std` (the host's and `wasm32-wasip1`'s) and
+`rust-src` as the Rust project publishes them (123 to 160 MB), each piece removed as the step that ends its use lands. A
 project's own pin does not change which Rust blaze builds with
 ([#269](https://github.com/indexable-inc/blaze/issues/269)). blaze's manifest reader, registry,
 resolver and unit graph (`crates/blaze-manifest`, `blaze-registry`, `blaze-resolve`,

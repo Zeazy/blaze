@@ -9605,7 +9605,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if align > 16 {
             return self.stack_slot(layout);
         }
-        let align_shift = align.trailing_zeros() as u8;
+        let align_shift = self.slot_align_shift(layout);
         let free = self.free_argument_slots.iter().position(|it| it.1 == (size, align_shift));
         let slot = match free {
             Some(free) => self.free_argument_slots.swap_remove(free).0,
@@ -9636,13 +9636,24 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         addr
     }
 
+    /// The alignment of a slot of `layout` of at most 16, as a shift: the layout's, or 16 on
+    /// AArch64 for a value `copy_value` copies in vectors, whose vectors are then at offsets
+    /// of the frame a load or store of 16 bytes reaches (see `reaches_vector`).
+    fn slot_align_shift(&self, layout: &Layout) -> u8 {
+        let shift = layout.align.abi.bytes().trailing_zeros() as u8;
+        if self.cg.target.arch == Arch::Aarch64 && self.copies_in_vectors(layout) {
+            return shift.max(4);
+        }
+        shift
+    }
+
     fn stack_slot(&mut self, layout: &Layout) -> Value {
         let (size, align) = (layout.size.bytes() as u32, layout.align.abi.bytes());
         if align <= 16 {
             let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 size,
-                align.trailing_zeros() as u8,
+                self.slot_align_shift(layout),
             ));
             return self.builder.ins().stack_addr(ptr(), slot, 0);
         }
@@ -11700,15 +11711,73 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     /// reach the cache (sha2's SHA-NI rounds ran at a ninth of rustc's unoptimized build's
     /// speed). Anything else goes in words, as its fields are written.
     fn copy_value(&mut self, dst: Value, src: Value, layout: &Layout) {
-        let vector = matches!(
-            (&layout.backend_repr, &layout.fields),
-            (BackendRepr::SimdVector { .. }, _) | (_, rustc_abi::FieldsShape::Array { .. })
-        ) && layout.size.bytes() % 16 == 0
-            && self.makes_vectors();
-        if !vector || dst == src || layout.size.bytes() > 128 {
+        if !self.copies_in_vectors(layout)
+            || dst == src
+            || !self.reaches_vector(dst)
+            || !self.reaches_vector(src)
+        {
             return self.copy(dst, src, layout.size);
         }
         self.copy_in(dst, src, layout.size, &[types::I8X16]);
+    }
+
+    /// Whether `copy_value` copies a value of `layout` in vectors of 16 bytes.
+    fn copies_in_vectors(&self, layout: &Layout) -> bool {
+        matches!(
+            (&layout.backend_repr, &layout.fields),
+            (BackendRepr::SimdVector { .. }, _) | (_, rustc_abi::FieldsShape::Array { .. })
+        ) && layout.size.bytes() % 16 == 0
+            && layout.size.bytes() <= 128
+            && self.makes_vectors()
+    }
+
+    /// Whether loads and stores of 16 bytes at `addr` and the 16-byte steps after it are
+    /// reached by an immediate offset. AArch64 reaches a slot of the frame from `sp`, and
+    /// Cranelift reaches an offset a 16-byte access can't encode (one past -256..256 that is
+    /// not a multiple of 16) by a register extended by `sxtx`, which valgrind can't decode
+    /// (it stops the program with SIGILL). A slot at an offset that is a multiple of 16 is
+    /// reached by a scaled immediate.
+    fn reaches_vector(&self, addr: Value) -> bool {
+        if self.cg.target.arch != Arch::Aarch64 {
+            return true;
+        }
+        let func = &self.builder.func;
+        let constant = |value: Value| match func.dfg.value_def(func.dfg.resolve_aliases(value)) {
+            ir::ValueDef::Result(inst, _) => match func.dfg.insts[inst] {
+                ir::InstructionData::UnaryImm { opcode: ir::Opcode::Iconst, imm } => {
+                    Some(imm.bits())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let (mut addr, mut offset) = (addr, 0i64);
+        loop {
+            let ir::ValueDef::Result(inst, _) = func.dfg.value_def(func.dfg.resolve_aliases(addr))
+            else {
+                return true;
+            };
+            match func.dfg.insts[inst] {
+                ir::InstructionData::StackAddr {
+                    opcode: ir::Opcode::StackAddr,
+                    stack_slot,
+                    offset: at,
+                } => {
+                    let aligned = func.sized_stack_slots[stack_slot].align_shift >= 4;
+                    return aligned && (offset + i64::from(at)) % 16 == 0;
+                }
+                ir::InstructionData::Binary { opcode: ir::Opcode::Iadd, args: [a, b] } => {
+                    let (base, by) = match (constant(a), constant(b)) {
+                        (_, Some(by)) => (a, by),
+                        (Some(by), _) => (b, by),
+                        _ => return true,
+                    };
+                    offset = offset.wrapping_add(by);
+                    addr = base;
+                }
+                _ => return true,
+            }
+        }
     }
 
     /// Stores `lanes` of `lane` to `dst` as one vector of 16 bytes, when they are 16 bytes and
@@ -11717,6 +11786,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
     fn store_whole(&mut self, lanes: &[Value], lane: Type, dst: Value) -> bool {
         let bits = lane.bits() as usize;
         if lanes.len() * bits != 128 || bits > 64 || !self.makes_vectors() {
+            return false;
+        }
+        if !self.reaches_vector(dst) {
             return false;
         }
         let int = Type::int(bits as u16).expect("a lane of 8 to 64 bits");

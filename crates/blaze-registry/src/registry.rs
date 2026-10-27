@@ -122,6 +122,7 @@ impl Registry {
             context.http.clone(),
             context.net.retry,
             context.net.offline,
+            context.auth.clone(),
         )?;
         Ok(Registry {
             src_dir: registry.join("src").join(&name),
@@ -173,6 +174,13 @@ impl Registry {
 
     pub fn is_local(&self) -> bool {
         matches!(self.files, Files::Local { .. })
+    }
+
+    pub(crate) fn sparse(&self) -> Option<&SparseIndex> {
+        match &self.files {
+            Files::Sparse(sparse) => Some(sparse),
+            Files::Local { .. } => None,
+        }
     }
 
     /// The registry's `config.json`; a local registry has none.

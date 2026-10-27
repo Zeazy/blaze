@@ -29,7 +29,10 @@ use ide_db::{
 use rustc_hash::FxHashMap;
 use sha2::{Digest, Sha256};
 
-use crate::{Args, content};
+use crate::{
+    Args,
+    content::{self, hex},
+};
 
 type Hash = [u8; 32];
 
@@ -611,10 +614,6 @@ fn defined(file: &object::File<'_>) -> Vec<String> {
     lines.extend(globals.map(|it| format!("symbol {it}")));
     lines.sort();
     lines
-}
-
-fn hex(hash: &Hash) -> String {
-    hash.iter().map(|it| format!("{it:02x}")).collect()
 }
 
 #[cfg(test)]

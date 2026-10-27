@@ -281,8 +281,7 @@ pub(crate) fn run_identity(asked: &Invocation) -> String {
     let hash = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(
         fields.join("\n").as_bytes(),
     ));
-    let hex: String = hash.iter().take(16).map(|it| format!("{it:02x}")).collect();
-    format!("+{hex}")
+    format!("+{}", crate::content::hex(&hash[..16]))
 }
 
 /// Whether what follows `--` leaves the tests to the program to pick and says nothing of how

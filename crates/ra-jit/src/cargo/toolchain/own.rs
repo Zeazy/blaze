@@ -501,7 +501,7 @@ async fn download(
         }
         tokio::time::sleep(Duration::from_secs(tries.into())).await;
     }
-    let got: String = hasher.finalize().iter().map(|it| format!("{it:02x}")).collect();
+    let got = crate::content::hex(&hasher.finalize());
     if got != pin.sha256 {
         drop(written);
         _ = std::fs::remove_file(part);
@@ -667,8 +667,7 @@ mod tests {
     }
 
     fn sha256(bytes: &[u8]) -> &'static str {
-        let hex: String = Sha256::digest(bytes).iter().map(|it| format!("{it:02x}")).collect();
-        hex.leak()
+        crate::content::hex(&Sha256::digest(bytes)).leak()
     }
 
     /// A release of two packages, written as the Rust project's site has them into `dist`,

@@ -298,15 +298,9 @@ stops using once a build is in full. On macOS the wrapper links those executable
 `-Wl,-headerpad,0x400000` and `-Wl,-bind_at_load`, so a splice has room for its load commands
 and the unwind table of a program of some four hundred thousand functions, and every import
 is bound at start; the daemon's own links leave both out of rustc's line
-(`cargo::plan::rustc_link_args`). While cargo builds, the spare worker resolves the names
-of each crate cargo is done with and compiles its functions, without the generic instances
-they reach, on a quarter of the cores, the rest being cargo's. It reads the symbols of each
-library as cargo writes it (`symbols::read_ahead`), so that once cargo is done only the
-program's own are left to read. Every line of cargo's reaches it through the daemon as cargo
-says it, and the spare reads its input from its first moment: a full pipe would have cargo
-wait. The daemon starts a spare as it starts and another as each build of a workspace it has
-no worker for begins (`Request::Ahead`); none is started to wait once a workspace is loaded,
-unless `RA_JIT_SPARE=ready` ([cargo.md](cargo.md#environment-variables)).
+(`cargo::plan::rustc_link_args`). The daemon starts a spare worker as it starts, which has
+the library of the toolchain loaded before it is told a build; none is started to wait once
+a workspace is loaded, unless `RA_JIT_SPARE=ready` ([cargo.md](cargo.md#environment-variables)).
 
 A patch over rustc has no marks of before to compare with, so the daemon takes them just in
 time: before an edit's text reaches the database, `home` notes the functions written in the

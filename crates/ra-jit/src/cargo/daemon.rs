@@ -145,25 +145,11 @@ pub(crate) struct Envelope {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
-    /// Bring the programs of a checkout up to date with its source, if the daemon is warm
-    /// for it.
-    Sync(Checkout),
     /// Load a checkout that cargo has just built, for the builds to come.
     Warm(Checkout),
     /// Load a checkout cargo has just built what stands in for the crates of, and answer
     /// when its programs are built.
     Build(Checkout),
-    /// A workspace cargo is about to build what stands in for the crates of: a worker
-    /// loads it meanwhile, for the [`Request::Build`] that follows.
-    Ahead(Ahead),
-    /// A line cargo printed of a build script it ran or a proc macro it built, for the
-    /// worker of the [`Request::Ahead`] of this [`WorkerConfig::id`].
-    Said {
-        id: String,
-        line: String,
-    },
-    /// No build follows the [`Request::Ahead`] of this [`WorkerConfig::id`].
-    Forget(String),
     /// `cargo ra-jit check` of a build the daemon has no programs of: what a checker that
     /// loaded the workspace as it would finds in its crates, with no rustc.
     Check(Ahead),
@@ -543,7 +529,7 @@ impl Worker {
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
         started.extend(config.env.clone());
-        let told = spare.and_then(|it| it.told(&args, &started, &checkout.root, false));
+        let told = spare.and_then(|it| it.told(&args, &started, &checkout.root));
         let child = match told {
             Some(spare) => {
                 log = spare.log;
@@ -862,19 +848,12 @@ impl Spare {
 
     /// Tells it to be the worker `args` start, with the variables `env`. `None` when it
     /// can't be told: it has ended, or a path of the build is not text.
-    /// One told a build `ahead` has what cargo has not built yet left out of `args`, and
-    /// is told them whole afterwards.
-    fn told(
-        mut self,
-        args: &[OsString],
-        env: &BTreeMap<String, String>,
-        cwd: &Path,
-        ahead: bool,
-    ) -> Option<Spare> {
+    fn told(mut self, args: &[OsString], env: &BTreeMap<String, String>, cwd: &Path) -> Option<Spare> {
         let told = || {
             let args: Option<Vec<String>> =
                 args.iter().map(|it| it.to_str().map(str::to_owned)).collect();
-            let told = crate::Told { args: args?, env: env.clone(), cwd: cwd.to_owned(), ahead };
+            let told =
+                crate::Told { args: args?, env: env.clone(), cwd: cwd.to_owned(), ahead: false };
             let mut line = serde_json::to_string(&told).ok()?;
             line.push('\n');
             Some(line)
@@ -890,16 +869,6 @@ impl Spare {
             return None;
         }
         Some(self)
-    }
-
-    /// Passes on what cargo said of a script or a proc macro. One that has ended is found
-    /// out when it is told its build.
-    fn said(&mut self, line: String) {
-        let Ok(mut line) = serde_json::to_string(&crate::Line::Said { said: line }) else { return };
-        line.push('\n');
-        if let Some(input) = self.child.stdin.as_mut() {
-            let _ = input.write_all(line.as_bytes());
-        }
     }
 
     fn stop(&mut self) {
@@ -1032,8 +1001,6 @@ struct Daemon {
     /// The worker the next workspace is loaded by, when there is one.
     spare: Mutex<Option<Spare>>,
     spare_when: Spares,
-    /// The workers told a build ahead of cargo's, by [`WorkerConfig::id`].
-    ahead: Mutex<FxHashMap<String, Spare>>,
     /// How many spare workers were started: each has a directory of its own.
     spares: AtomicUsize,
     /// The checkers of the last [`Request::Check`]s, each of another build and loaded for
@@ -1127,7 +1094,6 @@ pub(crate) fn serve() -> anyhow::Result<()> {
         workers: Mutex::default(),
         spare: Mutex::default(),
         spare_when,
-        ahead: Mutex::default(),
         spares: AtomicUsize::new(0),
         checkers: Mutex::default(),
         asked: Mutex::new(Instant::now()),
@@ -1226,27 +1192,10 @@ impl Daemon {
     fn handle(&self, request: Request) -> Reply {
         *lock(&self.asked) = Instant::now();
         match request {
-            Request::Sync(checkout) => self.sync(&checkout),
             Request::Warm(checkout) => match self.warm(checkout) {
                 Ok(()) => Reply::Warming,
                 Err(why) => Reply::Cold { reason: format!("{why:#}") },
             },
-            Request::Ahead(ahead) => {
-                self.ahead(ahead);
-                Reply::Warming
-            }
-            Request::Said { id, line } => {
-                if let Some(spare) = lock(&self.ahead).get_mut(&id) {
-                    spare.said(line);
-                }
-                Reply::Warming
-            }
-            Request::Forget(id) => {
-                if let Some(mut spare) = lock(&self.ahead).remove(&id) {
-                    spare.stop();
-                }
-                Reply::Warming
-            }
             Request::Build(checkout) => match self.warm(checkout.clone()) {
                 Ok(()) => self.built(&checkout),
                 Err(why) => Reply::Cold { reason: format!("{why:#}") },
@@ -1371,12 +1320,11 @@ impl Daemon {
         if let Some(old) = workers.remove(&id) {
             old.stop();
         }
-        let ahead = lock(&self.ahead).remove(&id);
         // A spare loads its library before it is told the build, which a whole build that
         // asks at once would wait for.
         let spare = match checkout.config.whole {
-            true => ahead,
-            false => ahead.or_else(|| lock(&self.spare).take()),
+            true => None,
+            false => lock(&self.spare).take(),
         };
         let worker =
             Arc::new(Worker::start(&checkout, self.home.join("workers").join(&id), spare)?);
@@ -1403,7 +1351,7 @@ impl Daemon {
             // The next spare starts when the worker that was one has loaded its workspace.
             if self.spare_when == Spares::Ready {
                 let loading = lock(&self.workers).values().any(|it| it.loading());
-                if !loading && lock(&self.ahead).is_empty() {
+                if !loading {
                     self.spare();
                 }
             }
@@ -1526,23 +1474,6 @@ impl Daemon {
         }
     }
 
-    /// Has the spare worker load the workspace of a build cargo has only started.
-    fn ahead(&self, ahead: Ahead) {
-        let id = ahead.config.id();
-        if lock(&self.workers).contains_key(&id) {
-            return;
-        }
-        let waiting = lock(&self.spare).take();
-        let Some(spare) = waiting.or_else(|| self.new_spare()) else { return };
-        let mut args = ahead.config.args(&ahead.root, &ahead.crates);
-        args.extend(["--out".into(), "none".into()]);
-        if let Some(spare) = spare.told(&args, &ahead.config.env, &ahead.root, true)
-            && let Some(mut other) = lock(&self.ahead).insert(id, spare)
-        {
-            other.stop();
-        }
-    }
-
     /// Starts a spare worker when there is none.
     fn spare(&self) {
         let mut spare = lock(&self.spare);
@@ -1574,16 +1505,12 @@ impl Daemon {
         // these are stopped: one started then would write in the home and outlive the daemon.
         // In the order a worker that loads a workspace takes them.
         let workers = lock(&self.workers);
-        let mut ahead = lock(&self.ahead);
         let mut spare = lock(&self.spare);
         if let Some(spare) = spare.as_mut() {
             spare.stop();
         }
         for checker in lock(&self.checkers).iter_mut() {
             checker.stop();
-        }
-        for spare in ahead.values_mut() {
-            spare.stop();
         }
         for worker in workers.values() {
             worker.let_go();

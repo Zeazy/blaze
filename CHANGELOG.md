@@ -10,6 +10,11 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Added
 
+- Nightly's `#[derive(From)]` (`#![feature(derive_from)]`, `std::from::From`) expands, as
+  rustc's does: `From` of the type of a struct's one field, keeping the struct's generics.
+  Every use of the conversion was refused ("no impl of the trait was selected for it"). On an
+  enum, a union, or a struct without exactly one field it is an error, as in rustc (#600).
+
 - `blaze lock --fetches [--target <triple>]...` pins what build scripts download, as Nix pins a
   fixed-output derivation: each download by its sha256 in `Cargo.fetches.lock` beside
   `Cargo.lock`, kept by the package's name, version and `Cargo.lock` checksum, the bytes in

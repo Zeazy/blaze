@@ -918,6 +918,12 @@ them too:
     target/<profile>/.ra-jit-units/     what the wrapper recorded of each rustc run
     target/ra-jit/<key>/                state of one command line, and the daemon's objects
 
+A clean while the daemon runs (`cargo blaze clean`, `cargo clean` or `rm -rf target`) tells
+it nothing, and it needs no telling: the worker keeps what it loaded, and before each build
+looks at what it wrote under the target directory. The standard library's unit it linked
+against, gone or another file than it wrote, is written again, from the store when it has it,
+and a program whose object is gone is built in full again, by the same worker.
+
 On Linux the object with all of a program the daemon compiled, `programs/<unit>/ra-jit.o`, is
 kept compressed as `ra-jit.o.zst` between the links that read it, a sixth of its size, and
 inflated again for the next: the executable has the debug information, so nothing else reads

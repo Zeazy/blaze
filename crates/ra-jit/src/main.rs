@@ -783,6 +783,39 @@ impl<'a> Resolver<'a> {
         known: &Rejections,
         contents: &'a content::Contents,
         listed: &'a Listed,
+    ) -> anyhow::Result<Resolver<'a>> {
+        let prebuilt = args.prebuilt.as_deref().filter(|_| table.is_empty()).map(|path| {
+            let defined = defined_symbols_kept(path).context("the standard library blaze built")?;
+            let program: Vec<Crate> =
+                args.crates().filter_map(|it| crates_named(db, it, args).ok()).flatten().collect();
+            let crates = library_unit(db, &program);
+            anyhow::Ok(Arc::new(Prebuilt { defined, crates }))
+        });
+        let prebuilt = prebuilt.transpose()?;
+        Ok(Resolver::with(db, table, args, known, contents, listed, prebuilt))
+    }
+
+    /// [`Resolver::of`] for what is asked of what rustc linked alone, which the standard
+    /// library blaze built is no part of: its symbols are not read.
+    fn of_rustcs(
+        db: &'a RootDatabase,
+        table: &'a SymbolTable,
+        args: &Args,
+        known: &Rejections,
+        contents: &'a content::Contents,
+        listed: &'a Listed,
+    ) -> Resolver<'a> {
+        Resolver::with(db, table, args, known, contents, listed, None)
+    }
+
+    fn with(
+        db: &'a RootDatabase,
+        table: &'a SymbolTable,
+        args: &Args,
+        known: &Rejections,
+        contents: &'a content::Contents,
+        listed: &'a Listed,
+        prebuilt: Option<Arc<Prebuilt>>,
     ) -> Resolver<'a> {
         let over_rustc = known.homes() && !known.builds_base();
         // A build with thread-locals of its own is linked in full: building it for a splice
@@ -807,14 +840,6 @@ impl<'a> Resolver<'a> {
         let named = (root.clone(), base.clone());
         hir_ty_codegen::name_sources(move |db, file| {
             source_path(db, &named.0, named.1.as_deref(), file)
-        });
-        let prebuilt = args.prebuilt.as_deref().filter(|_| table.is_empty()).map(|path| {
-            let defined = defined_symbols_kept(path)
-                .unwrap_or_else(|e| panic!("the standard library blaze built: {e:#}"));
-            let program: Vec<Crate> =
-                args.crates().filter_map(|it| crates_named(db, it, args).ok()).flatten().collect();
-            let crates = library_unit(db, &program);
-            Arc::new(Prebuilt { defined, crates })
         });
         Resolver {
             db,
@@ -3803,8 +3828,10 @@ fn write_reach(
     let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match of_tests(args) {
         true => hir::attach_db(db, || {
             let contents = content::Contents::default();
-            let resolver = Resolver::of(db, table, args, known, &contents, listed);
-            reach_of_tests(db, &resolver, listed, args)
+            match Resolver::of(db, table, args, known, &contents, listed) {
+                Ok(resolver) => reach_of_tests(db, &resolver, listed, args),
+                Err(error) => format!("*\t{error:#}\n"),
+            }
         }),
         // A test target cargo builds without libtest's harness says what it runs itself.
         false => "*\tit is not built with libtest's harness\n".to_owned(),
@@ -4393,7 +4420,7 @@ fn home_in_rustcs(
         let contents = content::Contents::default();
         for program in programs.iter_mut().filter(|it| it.known.homes()) {
             let Program { args, table, known, .. } = program;
-            let resolver = Resolver::of(db, table, args, known, &contents, listed);
+            let resolver = Resolver::of_rustcs(db, table, args, known, &contents, listed);
             for (file, functions, statics, callers) in &found {
                 known.home(db, &resolver, *file, functions, statics, callers);
             }
@@ -4474,7 +4501,7 @@ fn none_linked(
         };
         let contents = content::Contents::default();
         let Program { args, table, known, .. } = program;
-        let resolver = Resolver::of(db, table, args, known, &contents, listed);
+        let resolver = Resolver::of_rustcs(db, table, args, known, &contents, listed);
         let named = |func: &FunctionId| {
             let name = hir::Function::from(*func).name(db);
             names.iter().any(|it| it.as_str() == name.as_str())
@@ -4688,6 +4715,63 @@ fn std_unit(
     args: &Args,
     listed: &Listed,
 ) -> anyhow::Result<Option<PathBuf>> {
+    std_unit_at(db, table, args, listed, args.out.with_extension("std.o"))
+}
+
+/// The [`UnitStamps`] of each standard library's unit this process wrote, by its path.
+static UNITS_WRITTEN: std::sync::LazyLock<Mutex<FxHashMap<PathBuf, UnitStamps>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The length and write time of a standard library's unit and of its list of what it refused.
+type UnitStamps = [Option<(u64, SystemTime)>; 2];
+
+fn unit_stamps(unit: &Path) -> UnitStamps {
+    let stamp = |path: &Path| {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.len(), meta.modified().ok()?))
+    };
+    [stamp(unit), stamp(&refused_exports_of(unit))]
+}
+
+/// Writes the standard library's unit at `args.prebuilt` again, from the store or built, when
+/// what [`std_unit`] wrote there is gone or another file since: a worker keeps the path for as
+/// long as it runs, and a `cargo clean` or `rm -rf target` under it tells it nothing.
+fn std_unit_again(
+    db: &RootDatabase,
+    table: &SymbolTable,
+    args: &Args,
+    listed: &Listed,
+) -> anyhow::Result<()> {
+    static AGAIN: Mutex<()> = Mutex::new(());
+    let Some(unit) = &args.prebuilt else { return Ok(()) };
+    let _again = lock(&AGAIN);
+    let Some(written) = lock(&UNITS_WRITTEN).get(unit).copied() else { return Ok(()) };
+    if written.iter().all(Option::is_some) && unit_stamps(unit) == written {
+        return Ok(());
+    }
+    eprintln!(
+        "standard library: {} is not the file blaze wrote there, written again",
+        unit.display()
+    );
+    // As the worker had it when it wrote the unit first, before it had a line to link with.
+    let of_unit = Args { prebuilt: None, link_cmd: None, splice: None, ..args.clone() };
+    match std_unit_at(db, table, &of_unit, listed, unit.with_extension("o"))? {
+        Some(again) if again == *unit => Ok(()),
+        again => bail!(
+            "the standard library blaze built at {} is gone, and was written again as {again:?}",
+            unit.display()
+        ),
+    }
+}
+
+/// [`std_unit`], with the unit at `object`, or beside it as an archive.
+fn std_unit_at(
+    db: &RootDatabase,
+    table: &SymbolTable,
+    args: &Args,
+    listed: &Listed,
+    object: PathBuf,
+) -> anyhow::Result<Option<PathBuf>> {
     use sha2::{Digest, Sha256};
     if !table.is_empty() || args.prebuilt.is_some() || patches_its_library(args) {
         return Ok(None);
@@ -4758,9 +4842,11 @@ fn std_unit(
     // What it refused that a program can call by name is kept beside it ([`refused_exports_of`]).
     let refused_key: [u8; 32] =
         Sha256::new().chain_update(key).chain_update(b"refused").finalize().into();
-    let object = args.out.with_extension("std.o");
-    let archive = args.out.with_extension("std.a");
+    let archive = object.with_extension("a");
     let refused = refused_exports_of(&object);
+    let written = |path: &Path| {
+        lock(&UNITS_WRITTEN).insert(path.to_owned(), unit_stamps(path));
+    };
     let store = ra_jit_store::Store::global();
     let stored = || -> anyhow::Result<Option<PathBuf>> {
         let Some(store) = store else { return Ok(None) };
@@ -4772,6 +4858,7 @@ fn std_unit(
         std::fs::write(&refused, listed)
             .with_context(|| format!("writing {}", refused.display()))?;
         eprintln!("standard library: from the store, {} crates", members.len());
+        written(path);
         Ok(Some(path.clone()))
     };
     if let Some(path) = stored()? {
@@ -4836,6 +4923,7 @@ fn std_unit(
         store.insert(&key, &bytes);
         store.flush();
     }
+    written(&path);
     Ok(Some(path))
 }
 
@@ -5067,7 +5155,7 @@ fn build(
 ) -> anyhow::Result<Option<Build>> {
     let start = Instant::now();
     let contents = &content::Contents::default();
-    let resolver = Resolver::of(db, table, args, known, contents, listed);
+    let resolver = Resolver::of(db, table, args, known, contents, listed)?;
     let hir_db: &dyn HirDatabase = db;
     let mut functions = Vec::new();
     let mut kept = Vec::new();
@@ -10981,6 +11069,16 @@ impl Program {
         let named_anew = std::mem::take(&mut self.unbuilt.named_anew);
         let unnamed = if named_anew { None } else { self.widen(db) };
         self.read_copies_again(db)?;
+        std_unit_again(db, &self.table, &self.args, listed)?;
+        // What the worker wrote under the target directory is taken away by a clean under it,
+        // which tells it nothing: with the object of the program gone, there is nothing to
+        // patch.
+        if let Some(gone) = self.whole.clone().filter(|it| !whole::is_there(it)) {
+            eprintln!("{} is gone: built in full", gone.display());
+            self.known.start_again();
+            self.unbuilt.stale = true;
+            (self.wrote, self.whole) = (None, None);
+        }
         let Outputs { out, patch, link_cmd, splice, exe } = self.outputs(db, wanted)?;
         let Program {
             args, table, known, unbuilt, wrote, whole, tests, tests_now, own_lines, ..

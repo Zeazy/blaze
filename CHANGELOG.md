@@ -1047,6 +1047,14 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Fixed
 
+- A build after `cargo blaze clean`, `cargo clean` or `rm -rf target` while the daemon runs
+  builds, by the same worker (#721, reported by @maddada). The worker read the standard
+  library's unit it had written under `target/ra-jit/whole/` again, and every build until
+  `blaze stop` failed "a build of src/main.rs panicked: the standard library blaze built:
+  reading .../<name>.std.o: No such file or directory". Before each build the worker now
+  writes the unit again when it is gone or another file than it wrote (from the store when it
+  has it), and builds a program in full when its object is gone; a unit it can't read is an
+  error, not a panic (`harness/cargo_ra_jit.py`, `cleaned`).
 - blaze finds the toolchain behind Homebrew's rustup. Homebrew installs `rustc` as a script
   that starts rustup, beside no toolchain, and blaze took a proxy only by the name `rustup`,
   so the script's directory was read as a toolchain with no standard library: every build

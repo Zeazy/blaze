@@ -384,8 +384,10 @@ starts rustc, rustdoc or cargo ([no-rustc.md](no-rustc.md)).
 
 ### The release train
 
-`train.yaml` runs on every push to main and by hand (`gh workflow run train.yaml --ref
-<branch>` runs it on a branch, without the release or the issue). One train runs at a time: a
+`train.yaml` runs by hand only for now (`gh workflow run train.yaml` on main; `--ref <branch>`
+runs it on a branch, without the release or the issue). On every push to main it never
+finished and was red for reasons the merge gate (`ci`) does not share, so releases are cut by
+hand until it runs on pushes again. One train runs at a time: a
 push while it runs waits, and a newer push replaces the one waiting, so the train always runs
 on the newest commit of main once the one before it is done. It does not cancel the running
 train: with a merge every few minutes, a train of 45 would never end.

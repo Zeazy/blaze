@@ -77,6 +77,27 @@ impl Shape {
         Some(Shape { bits, float, signed, count: count.as_u64(), vectors })
     }
 
+    /// What a vector of 128 bits of NEON's holds (`float32x4_t`, `int8x16_t`), as the shape
+    /// of a scalable vector of as many lanes per 128 bits.
+    pub(super) fn fixed(layout: &Layout) -> Option<Shape> {
+        let BackendRepr::SimdVector { element, count } = layout.backend_repr else {
+            return None;
+        };
+        let (bits, float, signed) = match element.primitive() {
+            rustc_abi::Primitive::Int(int, signed) => (int.size().bits(), false, signed),
+            rustc_abi::Primitive::Float(float) => (float.size().bits(), true, true),
+            rustc_abi::Primitive::Pointer(_) => return None,
+        };
+        let count = count.as_u64();
+        (layout.size.bits() == 128 && bits * count == 128).then_some(Shape {
+            bits,
+            float,
+            signed,
+            count,
+            vectors: 1,
+        })
+    }
+
     pub(super) fn predicate(self) -> bool {
         self.bits == 1
     }
@@ -112,6 +133,12 @@ impl Shape {
     pub(super) fn llvm(self) -> String {
         let kind = if self.float { 'f' } else { 'i' };
         format!("nxv{}{kind}{}", self.count, self.bits)
+    }
+
+    /// LLVM's name of the vector of 128 bits of NEON's with its lanes: `v4i32`, `v2f64`.
+    fn llvm_fixed(self) -> String {
+        let kind = if self.float { 'f' } else { 'i' };
+        format!("v{}{kind}{}", self.count, self.bits)
     }
 
     /// The letter of a load or store of one lane of memory: `ld1b` to `ld1d`.
@@ -158,6 +185,9 @@ pub(super) enum Arg {
     Int(u64, Option<i128>),
     /// A float of so many bits, in the low bits of a vector register.
     Float(u64),
+    /// A vector of 128 bits of NEON's, of the lanes of the shape, handed over as the address
+    /// of its bytes.
+    Fixed(Shape),
 }
 
 /// What a stub gives.
@@ -305,6 +335,13 @@ impl Registers {
                     v += 1;
                     Reg::F(v - 1, bits)
                 }
+                // In the low 128 bits of the next vector register, as rustc passes it.
+                Arg::Fixed(shape) => {
+                    writeln!(loads, "ldr q{v}, [x{}]", x.1).unwrap();
+                    x.1 += 1;
+                    v += 1;
+                    Reg::Z(v - 1, shape)
+                }
                 Arg::Vector(shape) => {
                     if shape.suffix().is_none() {
                         return Err(format!("an operand of {shape:?}"));
@@ -419,6 +456,46 @@ fn prefetch(imm: i128) -> std::result::Result<String, String> {
     })
 }
 
+/// What a gather or scatter of lanes of memory size `size` (`b` to `d`) does before and the
+/// address it takes, as LLVM selects them, of `how` (the parts of its name after `gather` or
+/// `scatter`), the scalar register `base` and the vector one `offsets`: the base plus each
+/// offset (`sxtw`, `uxtw`: of 32 bits, extended), in elements with `index`, or the scalar plus
+/// each address with `scalar.offset`. Of the non-temporal ones (`non_temporal`), which take
+/// only `[z0.d, x0]`, LLVM shifts the indices before: `lsl z1.d, z1.d, #3`.
+fn gathered(
+    non_temporal: bool,
+    how: &[&str],
+    size: &str,
+    base: &str,
+    offsets: Reg,
+) -> Option<(String, String)> {
+    let Reg::Z(_, shape) = offsets else { return None };
+    let shift = "bhwd".find(size)?;
+    let z = offsets.full();
+    let wide = shape.suffix() == Some("d");
+    let narrow = shape.suffix() == Some("s");
+    Some(match (how, non_temporal) {
+        ([], true) if wide => (String::new(), format!("[{z}, {base}]")),
+        (["scalar", "offset"], true) if wide || narrow => (String::new(), format!("[{z}, {base}]")),
+        ([] | ["scalar", "offset"], false) if wide => (String::new(), format!("[{base}, {z}]")),
+        (["scalar", "offset"], false) if narrow => (String::new(), format!("[{base}, {z}, uxtw]")),
+        (["index"], true) if wide && shift > 0 => {
+            (format!("lsl {z}, {z}, #{shift}\n"), format!("[{z}, {base}]"))
+        }
+        (["index"], false) if wide && shift > 0 => {
+            (String::new(), format!("[{base}, {z}, lsl #{shift}]"))
+        }
+        (["uxtw"], true) if narrow => (String::new(), format!("[{z}, {base}]")),
+        ([extend @ ("sxtw" | "uxtw")], false) if narrow => {
+            (String::new(), format!("[{base}, {z}, {extend}]"))
+        }
+        ([extend @ ("sxtw" | "uxtw"), "index"], false) if narrow && shift > 0 => {
+            (String::new(), format!("[{base}, {z}, {extend} #{shift}]"))
+        }
+        _ => return None,
+    })
+}
+
 /// Whether `pg` is a predicate that governs the lanes of `data`, one vector of each.
 fn lanes_of(pg: Shape, data: Shape) -> bool {
     pg.predicate() && pg.vectors == 1 && data.vectors == 1 && pg.count == data.count
@@ -446,10 +523,10 @@ fn predicate_suffix(ty: &str) -> Option<&'static str> {
 }
 
 /// Whether a part of an intrinsic's name says a type it is overloaded on (`nxv4i32`, `i64`,
-/// `f32f64`, `p0`) rather than what it does (`wide`, `x`, `z`, `lane`).
+/// `v4f32`, `f32f64`, `p0`) rather than what it does (`wide`, `x`, `z`, `lane`).
 fn is_type(part: &str) -> bool {
-    let rest =
-        part.strip_prefix("nxv").map(|it| it.trim_start_matches(|c: char| c.is_ascii_digit()));
+    let rest = (part.strip_prefix("nxv").or_else(|| part.strip_prefix('v')))
+        .map(|it| it.trim_start_matches(|c: char| c.is_ascii_digit()));
     let scalars = |mut it: &str| {
         let mut any = false;
         while let Some(after) = it.strip_prefix(['i', 'f']) {
@@ -466,7 +543,8 @@ fn is_type(part: &str) -> bool {
 }
 
 /// One letter per operand, and after `>` one for the result: `P` a predicate, `V` a data
-/// vector, `T` a tuple of them, `I` an integer, `C` a constant one, `F` a float, `-` nothing.
+/// vector, `T` a tuple of them, `N` a vector of NEON's, `I` an integer, `C` a constant one, `F`
+/// a float, `-` nothing.
 fn signature(args: &[Arg], ret: Ret) -> String {
     let vector = |shape: Shape| {
         if shape.predicate() {
@@ -484,6 +562,7 @@ fn signature(args: &[Arg], ret: Ret) -> String {
             Arg::Int(_, Some(_)) => 'C',
             Arg::Int(..) => 'I',
             Arg::Float(_) => 'F',
+            Arg::Fixed(_) => 'N',
         })
         .collect();
     signature.push('>');
@@ -682,7 +761,13 @@ fn selected(
     ret: Ret,
 ) -> std::result::Result<(Registers, String), String> {
     let unsupported = || Err(format!("LLVM intrinsic `{name}`"));
-    let Some(rest) = name.strip_prefix("aarch64.sve.") else { return unsupported() };
+    // LLVM's own reversal of the lanes of a vector or predicate is SVE's `rev`.
+    let reversal = name.strip_prefix("vector.reverse.").map(|it| format!("rev.{it}"));
+    let insertion = name.strip_prefix("vector.insert.").map(|it| format!("insert.{it}"));
+    let ours = reversal.as_deref().or(insertion.as_deref());
+    let Some(rest) = ours.or_else(|| name.strip_prefix("aarch64.sve.")) else {
+        return unsupported();
+    };
     let parts: Vec<&str> = rest.split('.').collect();
     let registers = Registers::new(args, ret)?;
     // Each type the name is overloaded on is of an operand or the result.
@@ -811,6 +896,70 @@ fn selected(
         ("prf", [], "PIC>-") => {
             let Some(size) = shape_of(0).suffix().map(suffix_size) else { return unsupported() };
             format!("prf{size} {}, {}, [{}]\n", prefetch(constant(2))?, bare(0), bare(1))
+        }
+        // Each active lane read from an address of its own, the others zero.
+        ("ld1" | "ldff1" | "ldnt1", ["gather", how @ ..], "PIV>V" | "PVI>V") => {
+            let Ret::Vector(data) = ret else { return unsupported() };
+            let (base, offsets) = if signature == "PIV>V" { (1, 2) } else { (2, 1) };
+            let Some(size) = data.memory_size() else { return unsupported() };
+            let Some((before, address)) =
+                gathered(n == "ldnt1", how, size, &bare(base), o(offsets))
+            else {
+                return unsupported();
+            };
+            if !lanes_of(shape_of(0), data) || data.suffix() != shape_of(offsets).suffix() {
+                return unsupported();
+            }
+            format!("{before}{n}{size} {{ {r} }}, {}/z, {address}\n", bare(0))
+        }
+        // Each active lane written to an address of its own.
+        ("st1" | "stnt1", ["scatter", how @ ..], "VPIV>-" | "VPVI>-") => {
+            let data = shape_of(0);
+            let (base, offsets) = if signature == "VPIV>-" { (2, 3) } else { (3, 2) };
+            let Some(size) = data.memory_size() else { return unsupported() };
+            let Some((before, address)) =
+                gathered(n == "stnt1", how, size, &bare(base), o(offsets))
+            else {
+                return unsupported();
+            };
+            if !lanes_of(shape_of(1), data) || data.suffix() != shape_of(offsets).suffix() {
+                return unsupported();
+            }
+            format!("{before}{n}{size} {}, {}, {address}\n", o(0).list(), bare(1))
+        }
+        // A prefetch of each active lane's address, the base plus each offset in elements.
+        // LLVM writes those of bytes unshifted.
+        ("prfb" | "prfh" | "prfw" | "prfd", ["gather", extend @ .., "index"], "PIVC>-") => {
+            let offsets = shape_of(2);
+            let extend = match (extend, offsets.suffix()) {
+                ([], Some("d")) => "lsl",
+                (["sxtw" | "uxtw"], Some("s")) => extend[0],
+                _ => return unsupported(),
+            };
+            if !lanes_of(shape_of(0), offsets) {
+                return unsupported();
+            }
+            let shift = match ("bhwd".find(&n[3..]).unwrap(), extend) {
+                (0, "lsl") => String::new(),
+                (0, _) => format!(", {extend}"),
+                (k, _) => format!(", {extend} #{k}"),
+            };
+            let operation = prefetch(constant(3))?;
+            format!("{n} {operation}, {}, [{}, {}{shift}]\n", bare(0), bare(1), full(2))
+        }
+        // A prefetch of each active lane's address, a vector of them, at no offset.
+        ("prfb" | "prfh" | "prfw" | "prfd", ["gather", "scalar", "offset"], "PVCC>-")
+            if lanes_of(shape_of(0), shape_of(1)) && constant(2) == 0 =>
+        {
+            format!("{n} {}, {}, [{}]\n", prefetch(constant(3))?, bare(0), full(1))
+        }
+        // The same at the offset of a scalar, which LLVM writes as a prefetch of bytes at
+        // the scalar plus each address of the low 32 bits, of whatever size.
+        ("prfb" | "prfh" | "prfw" | "prfd", ["gather", "scalar", "offset"], "PVIC>-")
+            if lanes_of(shape_of(0), shape_of(1)) =>
+        {
+            let operation = prefetch(constant(3))?;
+            format!("prfb {operation}, {}, [{}, {}, uxtw]\n", bare(0), bare(2), full(1))
         }
         (_, [] | ["wide"], "PVV>V") if MERGING.contains(&n) => {
             format!("{n} {r}, {}/m, {}, {}\n", bare(0), full(1), full(2))
@@ -998,6 +1147,27 @@ fn selected(
                  orr z1.d, z1.d, z2.d\ntbl z0.d, {{ {} }}, z1.d\n",
                 o(0).with("d")
             )
+        }
+        // LLVM's insertion of a vector of NEON's at the first lane (`svdupq_n_s32`'s): its lanes
+        // in the first 128 bits, those after them of the scalable operand. At another lane it
+        // is past the end of a vector of 128 bits.
+        ("insert", [], "VNC>V") => {
+            let (Arg::Fixed(fixed), Ret::Vector(data)) = (args[1], ret) else {
+                return unsupported();
+            };
+            let same =
+                |it: Shape| (it.bits, it.float, it.count) == (data.bits, data.float, data.count);
+            let Some(suffix) = data.suffix() else { return unsupported() };
+            if constant(2) != 0
+                || data.vectors != 1
+                || data.predicate()
+                || shape_of(0) != data
+                || !same(fixed)
+                || parts.get(2) != Some(&&*fixed.llvm_fixed())
+            {
+                return unsupported();
+            }
+            format!("ptrue p0.{suffix}, vl{}\nmov {r}, p0/m, {}\n", data.count, full(1))
         }
         ("index", [], "II>V") => format!("index {r}, {}, {}\n", bare(0), bare(1)),
         ("insr", [], "VI>V" | "VF>V") => format!("insr {r}, {}\n", full(1)),
@@ -1208,6 +1378,12 @@ impl<'db> FunctionCx<'_, 'db> {
                 continue;
             }
             let layout = self.layout(ty)?;
+            if let Some(shape) = Shape::fixed(&layout) {
+                let (addr, _) = self.operand(arg)?;
+                kinds.push(Arg::Fixed(shape));
+                addresses.push(addr);
+                continue;
+            }
             let BackendRepr::Scalar(_) = layout.backend_repr else {
                 unsupported!("LLVM intrinsic `{name}` with an operand of {ty:?}");
             };
@@ -1391,6 +1567,22 @@ mod tests {
     }
 
     #[test]
+    fn insertion_of_a_neon_vector_loads_its_128_bits() {
+        let args = [Arg::Vector(S32), Arg::Fixed(S32), Arg::Int(64, Some(0))];
+        let name = "vector.insert.nxv4i32.v4i32";
+        let text = stub(name, &args, Ret::Vector(S32)).unwrap();
+        assert!(
+            text.contains("ldr z0, [x2]\nldr q1, [x3]\nptrue p0.s, vl4\nmov z0.s, p0/m, z1.s\n"),
+            "{text}"
+        );
+        let past = [Arg::Vector(S32), Arg::Fixed(S32), Arg::Int(64, Some(4))];
+        assert!(stub(name, &past, Ret::Vector(S32)).is_err());
+        let halves = Shape { bits: 16, count: 8, ..S32 };
+        let other = [Arg::Vector(S32), Arg::Fixed(halves), Arg::Int(64, Some(0))];
+        assert!(stub("vector.insert.nxv4i32.v8i16", &other, Ret::Vector(S32)).is_err());
+    }
+
+    #[test]
     fn select_of_words() {
         let text = select(B4, S32).unwrap();
         assert!(text.contains("ldr z0, [x2]\nldr z1, [x3]\nsel z0.s, p0, z0.s, z1.s\n"), "{text}");
@@ -1467,6 +1659,14 @@ mod tests {
                     Some((ty, value)) => (ty, Some(value.parse::<i128>().unwrap())),
                     None => (operand, None),
                 };
+                // A vector of NEON's, `v4f32`, in the next vector register.
+                let fixed = ty.strip_prefix('v').and_then(|it| fixture_type(&format!("nxv{it}")));
+                if let Some(Ok(shape)) = fixed {
+                    theirs.push(vec![('v', v)]);
+                    v += 1;
+                    args.push(Arg::Fixed(shape));
+                    continue;
+                }
                 match fixture_type(ty).unwrap() {
                     Ok(shape) if shape.predicate() => {
                         theirs.push(vec![('p', p)]);
@@ -1496,7 +1696,11 @@ mod tests {
                 Err(('f', bits)) => Ret::Float(bits),
                 Err((_, bits)) => Ret::Int(bits),
             };
-            let full = format!("aarch64.sve.{name}");
+            let full = if name.starts_with("vector.") {
+                name.to_owned()
+            } else {
+                format!("aarch64.sve.{name}")
+            };
             let (registers, body) = match selected(&full, &args, ret) {
                 Ok(it) => it,
                 Err(e) => {

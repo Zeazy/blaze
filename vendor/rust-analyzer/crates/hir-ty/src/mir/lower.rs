@@ -551,8 +551,17 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         else {
             return Ok(None);
         };
-        // `CONST.len()` borrows a promoted constant just as `(&CONST).len()` does.
-        if bk == BorrowKind::Shared
+        // `CONST.len()` borrows a promoted constant just as `(&CONST).len()` does, and
+        // `[][..]` mutably an empty array just as `&mut []` does (rustc's `validate_ref`).
+        let promotable_kind = match bk {
+            BorrowKind::Shared => true,
+            BorrowKind::Mut {
+                kind: super::MutBorrowKind::Default | super::MutBorrowKind::TwoPhasedBorrow,
+            } => self.is_empty_array(expr_id),
+            BorrowKind::Shallow
+            | BorrowKind::Mut { kind: super::MutBorrowKind::ClosureCapture } => false,
+        };
+        if promotable_kind
             && rest.is_empty()
             && p.local.into_raw().into_u32() as usize >= locals
             && p.projection.as_slice().is_empty()
@@ -1108,9 +1117,12 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                         let func = Operand::from_bytes(Box::default(), callee_ty);
                         // `#[rustc_legacy_const_generics]`: those are generic arguments.
                         let consts = match def.0 {
-                            CallableDefId::FunctionId(func) => FunctionSignature::of(self.db, func)
-                                .legacy_const_generics_indices(self.db, func)
-                                .filter(|consts| args.len() > consts.len()),
+                            CallableDefId::FunctionId(func) => {
+                                let signature = FunctionSignature::of(self.db, func);
+                                signature
+                                    .legacy_const_generics_indices(self.db, func)
+                                    .filter(|_| args.len() > signature.params.len())
+                            }
                             _ => None,
                         }
                         .unwrap_or_default();
@@ -1950,8 +1962,15 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                             operands
                                 .push(Operand { kind: OperandKind::Move(tmp.store()), span: None });
                         }
+                        // A `Copy` capture leaves the binding live: a coroutine keeps it across
+                        // a suspension the closure is awaited over.
                         UpvarCapture::ByValue => {
-                            operands.push(Operand { kind: OperandKind::Move(p), span: None })
+                            let kind = if self.is_copy(capture.captured_ty(self.db)) {
+                                OperandKind::Copy(p)
+                            } else {
+                                OperandKind::Move(p)
+                            };
+                            operands.push(Operand { kind, span: None })
                         }
                         UpvarCapture::ByUse => not_supported!("capture by use"),
                     }
@@ -4119,7 +4138,10 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
 
     /// The way out of a match arm whose guard was false. What the guard bound is dropped, and
     /// what the pattern took out of the matched value goes back, for the arms that follow and
-    /// for whoever drops that value.
+    /// for whoever drops that value. The storage of what the pattern bound ends too, as rustc
+    /// leaves the arm's scope there (`in_if_then_scope`): its bindings are references to the
+    /// value matched on, or bound by value only once the guard holds, so the next way the arm
+    /// can match binds them afresh.
     fn guard_failed(
         &mut self,
         mut current: BasicBlockId,
@@ -4127,11 +4149,15 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
         span: MirSpan,
     ) -> BasicBlockId {
         if let Some(arm) = self.drop_scopes.last() {
+            let by_pattern = arm.locals.get(..bound_by_pattern).unwrap_or_default().to_vec();
             let by_guard = DropScope {
                 locals: arm.locals.get(bound_by_pattern..).unwrap_or_default().to_vec(),
                 ..Default::default()
             };
             self.emit_drop_and_storage_dead_for_scope(&by_guard, &mut current, span);
+            for &local in by_pattern.iter().rev() {
+                self.push_statement(current, StatementKind::StorageDead(local).with_span(span));
+            }
         }
         current
     }
@@ -4518,6 +4544,27 @@ fn failed_expansion<'db>(db: &'db dyn HirDatabase, owner: InferBodyId<'db>) -> O
         let count = statements.statements().count();
         if count == 0 && statements.expr().is_some() {
             return None;
+        }
+        // One expression and a `;`: rustc takes the `;` (`ParserAnyMacro::make`) and the
+        // expression is the call's value, as the body is lowered. Its lint
+        // `semicolon_in_expressions_from_macros` is denied by default for a macro of the
+        // crate itself, and not given for another crate's.
+        let one_with_semi = match statements.statements().next() {
+            Some(syntax::ast::Stmt::ExprStmt(only)) if count == 1 => {
+                only.semicolon_token().is_some() && only.expr().is_some()
+            }
+            _ => false,
+        };
+        if one_with_semi && statements.expr().is_none() {
+            if call.loc(db).def.krate != owner.krate(db) {
+                return None;
+            }
+            return Some(
+                "macro call in parentheses or brackets with no `;` after it, whose expansion \
+                 is one expression and a `;`, which rustc's `semicolon_in_expressions_from_macros` \
+                 refuses for a macro of the same crate"
+                    .to_owned(),
+            );
         }
         let what = match (count, statements.expr().is_some()) {
             (0, false) => "nothing".to_owned(),

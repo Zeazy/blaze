@@ -1,6 +1,7 @@
 //! A registry that requires a token, served from memory: `config.json` asked first with no
 //! token and again with it after a 401, the index and the `.crate` files asked with it, and a
-//! missing or refused token said as cargo says it.
+//! missing or refused token said as cargo says it; credential processes and
+//! `cargo:token-from-stdout` asked as cargo asks them.
 
 use std::{
     io::Write,
@@ -251,5 +252,152 @@ fn a_token_the_registry_ignores_is_warned_of() {
             fixture.home.join("credentials.toml").display()
         )]
     );
-    assert!(format!("{err:#}").contains("cargo:token-from-stdout x"), "{err:#}");
+    let chain: Vec<String> = err.chain().map(ToString::to_string).collect();
+    let failed = chain
+        .iter()
+        .position(|it| it == "credential provider `cargo:token-from-stdout x` failed action `get`");
+    let failed = failed.unwrap_or_else(|| panic!("{chain:#?}"));
+    assert_eq!(chain[failed + 1], "failed to spawn credential process");
+}
+
+/// An executable `name` in the fixture's home.
+#[cfg(unix)]
+fn script(fixture: &Fixture, name: &str, text: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = fixture.home.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{text}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.display().to_string()
+}
+
+/// A credential process that keeps each request in `asked` and gives `answer`.
+#[cfg(unix)]
+fn credential_process(fixture: &Fixture, answer: &str) -> String {
+    script(
+        fixture,
+        "provider",
+        &format!(
+            "echo '{{\"v\":[1]}}'\nread -r request\nprintf '%s\\n' \"$request\" >> \"$(dirname \
+             \"$0\")/asked\"\necho '{answer}'\ncat > /dev/null\n"
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn with_provider(fixture: &Fixture, provider: &str) {
+    let config = format!(
+        "[registries.private]\nindex = \"sparse+{BASE}\"\n\n[registry]\n\
+         global-credential-providers = [\"{provider}\"]\n"
+    );
+    std::fs::write(fixture.home.join("config.toml"), config).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_credential_process_is_asked_as_cargo_asks() {
+    let fixture = Fixture::new("process", "s3cret", "", "");
+    let answer =
+        r#"{"Ok":{"kind":"get","token":"s3cret","cache":"session","operation_independent":true}}"#;
+    let provider = credential_process(&fixture, answer);
+    with_provider(&fixture, &format!("{provider} an-arg"));
+    fixture.fetch(&[]).unwrap();
+    let token = Some("s3cret".to_owned());
+    assert_eq!(fixture.asked().last().unwrap(), &(format!("{DL}secret/1.0.0"), token));
+    let asked = std::fs::read_to_string(fixture.home.join("asked")).unwrap();
+    let asked: Vec<serde_json::Value> =
+        asked.lines().map(|it| serde_json::from_str(it).unwrap()).collect();
+    assert_eq!(asked.len(), 1, "a token of the session is asked for once: {asked:#?}");
+    assert_eq!(
+        asked[0],
+        serde_json::json!({
+            "v": 1,
+            "registry": {
+                "index-url": format!("sparse+{BASE}"),
+                "name": "private",
+                "headers": [
+                    format!(r#"www-authenticate: Basic realm="x", Cargo login_url="{LOGIN}""#)
+                ],
+            },
+            "kind": "get",
+            "operation": "read",
+            "args": ["an-arg"],
+        })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_credential_process_that_fails_is_said_as_cargo_says() {
+    let fixture = Fixture::new("process-fails", "s3cret", "", "");
+    let answer =
+        r#"{"Err":{"kind":"other","message":"the vault is locked","caused-by":["no key","none"]}}"#;
+    let provider = credential_process(&fixture, answer);
+    with_provider(&fixture, &provider);
+    let err = fixture.fetch(&[]).unwrap_err();
+    let chain: Vec<String> = err.chain().map(ToString::to_string).collect();
+    let at = chain
+        .iter()
+        .position(|it| it == &format!("credential provider `{provider}` failed action `get`"));
+    let at = at.unwrap_or_else(|| panic!("{chain:#?}"));
+    assert_eq!(chain[at + 1..], ["the vault is locked", "no key", "none"]);
+
+    let fixture = Fixture::new("process-not-found", "s3cret", "", "");
+    let provider = credential_process(&fixture, r#"{"Err":{"kind":"not-found"}}"#);
+    with_provider(&fixture, &provider);
+    let err = fixture.fetch(&[]).unwrap_err();
+    assert!(
+        err.chain().any(|it| it.to_string().starts_with("no token found for `private`")),
+        "{err:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn token_from_stdout_runs_its_command() {
+    let fixture = Fixture::new("stdout", "s3cret", "", "");
+    let print = script(
+        &fixture,
+        "print",
+        "echo \"$1 $CARGO_REGISTRY_NAME_OPT $CARGO_REGISTRY_INDEX_URL\" > \"$(dirname \"$0\")/asked\"\n\
+         printf 's3cret\\r\\n'\n",
+    );
+    with_provider(&fixture, &format!("cargo:token-from-stdout {print} {{index_url}}"));
+    fixture.fetch(&[]).unwrap();
+    assert_eq!(fixture.asked().last().unwrap().1.as_deref(), Some("s3cret"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.home.join("asked")).unwrap(),
+        format!("sparse+{BASE} private sparse+{BASE}\n")
+    );
+
+    let fixture = Fixture::new("stdout-lines", "s3cret", "", "");
+    let print = script(&fixture, "print", "echo one\necho two\n");
+    with_provider(&fixture, &format!("cargo:token-from-stdout {print}"));
+    let err = fixture.fetch(&[]).unwrap_err();
+    let said =
+        format!("process `{print}` returned more than one line of output; expected a single token");
+    assert!(err.chain().any(|it| it.to_string() == said), "{err:#}");
+}
+
+#[test]
+fn a_provider_blaze_does_not_run_is_named() {
+    let provider = if cfg!(target_os = "macos") {
+        "cargo:macos-keychain"
+    } else if cfg!(windows) {
+        "cargo:wincred"
+    } else {
+        "cargo:libsecret"
+    };
+    let config = format!("\n[registry]\nglobal-credential-providers = [\"{provider}\"]\n");
+    let fixture = Fixture::new("not-run", "s3cret", &config, "");
+    let err = fixture.fetch(&[]).unwrap_err();
+    assert!(
+        err.chain().any(|it| it.to_string()
+            == format!(
+                "credential provider `{provider}` is not one blaze runs yet: blaze runs \
+                 `cargo:token`, `cargo:token-from-stdout` and credential processes\nname one \
+                 of those for registry `private` in `registry.global-credential-providers` \
+                 or its `credential-provider`"
+            )),
+        "{err:#}"
+    );
 }

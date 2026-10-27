@@ -1,8 +1,12 @@
-//! A registry's token as cargo 1.99 finds and sends it (`src/util/auth/mod.rs`,
+//! A registry's token as cargo 1.101 finds and sends it (`src/util/auth/mod.rs`,
 //! `src/util/credential/token.rs`): the providers of `registry.global-credential-providers`, or
 //! the registry's own `credential-provider`, asked in turn; `cargo:token` reading
-//! `credentials.toml` and `CARGO_REGISTRIES_<NAME>_TOKEN`; a token kept for the rest of the run
-//! as its provider says; and cargo's words when there is none or the registry refuses it.
+//! `credentials.toml` and `CARGO_REGISTRIES_<NAME>_TOKEN`, `cargo:token-from-stdout` and
+//! credential processes run ([`process`]); a token kept for the rest of the run as its provider
+//! says; and cargo's words when there is none or the registry refuses it.
+
+mod process;
+mod protocol;
 
 use std::{
     fmt,
@@ -12,9 +16,9 @@ use std::{
 
 use anyhow::bail;
 use blaze_manifest::config::{Config, OptValue, PathAndArgs, Value, env_key};
-use rustc_hash::FxHashMap;
-
 use blaze_source::SourceId;
+use rustc_hash::FxHashMap;
+use serde_derive::Serialize;
 
 use crate::{api::check_token, registry_source};
 
@@ -72,7 +76,8 @@ impl Shell for Stderr {
 }
 
 /// What a token is asked for, as `cargo_credential::Operation`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "operation", rename_all = "kebab-case")]
 pub enum Operation<'a> {
     /// Reading the index or fetching a `.crate`; a search.
     Read,
@@ -95,16 +100,23 @@ pub enum Operation<'a> {
 }
 
 /// What the providers are asked to do, as `cargo_credential::Action`.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 enum Action<'a> {
-    Get,
-    Login { token: Option<&'a str>, login_url: Option<&'a str> },
+    Get(Operation<'a>),
+    Login {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<&'a str>,
+        #[serde(rename = "login-url", skip_serializing_if = "Option::is_none")]
+        login_url: Option<&'a str>,
+    },
     Logout,
 }
 
 impl fmt::Display for Action<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Action::Get => "get",
+            Action::Get(_) => "get",
             Action::Login { .. } => "login",
             Action::Logout => "logout",
         })
@@ -114,14 +126,22 @@ impl fmt::Display for Action<'_> {
 /// What a provider answered, as `cargo_credential::CredentialResponse`.
 #[derive(Debug)]
 enum Response {
-    Get { token: String, cache: CacheControl, operation_independent: bool },
+    Get {
+        token: String,
+        cache: CacheControl,
+        operation_independent: bool,
+    },
     Login,
     Logout,
+    /// A kind this protocol version does not have.
+    Unknown,
 }
 
-/// How long a token may be used again in this run: `cargo:token`'s, for the rest of it.
+/// How long a token may be used again in this run.
 #[derive(Debug)]
 enum CacheControl {
+    Never,
+    Expires(SystemTime),
     Session,
 }
 
@@ -139,6 +159,12 @@ impl From<anyhow::Error> for Failure {
     }
 }
 
+impl Failure {
+    fn operation_not_supported() -> Failure {
+        Failure::Fatal(anyhow::anyhow!("requested operation not supported"))
+    }
+}
+
 /// No provider had a token, or one to remove: `cargo_credential::Error::NotFound`.
 #[derive(Debug)]
 struct NotFound;
@@ -152,21 +178,14 @@ impl fmt::Display for NotFound {
 impl std::error::Error for NotFound {}
 
 /// cargo's built-in providers, which an alias cannot shadow.
-const BUILT_IN: &[&str] = &[
-    TOKEN,
-    "cargo:paseto",
-    "cargo:token-from-stdout",
-    "cargo:wincred",
-    "cargo:macos-keychain",
-    "cargo:libsecret",
-];
+const BUILT_IN: &[&str] =
+    &[TOKEN, "cargo:token-from-stdout", "cargo:wincred", "cargo:macos-keychain", "cargo:libsecret"];
 
 const TOKEN: &str = "cargo:token";
 
 /// The built-in provider for this platform that cargo runs and blaze does not yet.
 fn not_run_here(name: &str) -> bool {
     match name {
-        "cargo:token-from-stdout" => true,
         "cargo:wincred" => cfg!(windows),
         "cargo:macos-keychain" => cfg!(target_os = "macos"),
         "cargo:libsecret" => cfg!(target_os = "linux"),
@@ -174,12 +193,11 @@ fn not_run_here(name: &str) -> bool {
     }
 }
 
-/// A registry's `[registry]` (crates.io) or `[registries.<name>]` credentials, with
-/// `credentials.toml` and the variables over the files.
+/// A registry's `[registry]` (crates.io) or `[registries.<name>]` credentials: its token
+/// ([`Config::credentials_token`]) and the provider the configuration names for it.
 #[derive(Clone)]
 struct Credentials {
     token: OptValue<String>,
-    secret_key: OptValue<String>,
     provider: Option<PathAndArgs>,
 }
 
@@ -403,16 +421,24 @@ impl State {
                 return Ok(Some(cached.token.clone()));
             }
         }
-        let answer =
-            match self.action(shell, registry, &Action::Get, headers, &[], require_provider) {
-                Err(e) if e.is::<NotFound>() => return Ok(None),
-                answer => answer?,
-            };
+        let answer = match self.action(
+            shell,
+            registry,
+            &Action::Get(operation),
+            headers,
+            &[],
+            require_provider,
+        ) {
+            Err(e) if e.is::<NotFound>() => return Ok(None),
+            answer => answer?,
+        };
         let Response::Get { token, cache, operation_independent } = answer else {
             bail!("credential provider produced unexpected response for `get` request: {answer:?}")
         };
         let expiration = match cache {
+            CacheControl::Expires(at) => Some(at),
             CacheControl::Session => None,
+            CacheControl::Never => return Ok(Some(token)),
         };
         let cached = Cached { token: token.clone(), expiration, operation_independent };
         self.tokens.insert(key, cached);
@@ -425,7 +451,7 @@ impl State {
         shell: &dyn Shell,
         registry: Named<'_>,
         action: &Action<'_>,
-        _headers: &[String],
+        headers: &[String],
         extra: &[&str],
         require_provider: bool,
     ) -> anyhow::Result<Response> {
@@ -435,15 +461,14 @@ impl State {
             let args: Vec<&str> =
                 provider.iter().map(String::as_str).chain(extra.iter().copied()).collect();
             let program = args[0];
-            if program == "cargo:paseto" {
-                bail!("cargo:paseto requires -Zasymmetric-token");
-            }
-            if not_run_here(program) || !BUILT_IN.contains(&program) {
+            if not_run_here(program) {
                 bail!(
-                    "credential provider `{}` is not one blaze runs yet: of the providers, blaze \
-                     runs only `cargo:token`, which reads the configuration and \
-                     `credentials.toml`",
-                    args.join(" ")
+                    "credential provider `{}` is not one blaze runs yet: blaze runs \
+                     `cargo:token`, `cargo:token-from-stdout` and credential processes\n\
+                     name one of those for {} in `registry.global-credential-providers` or \
+                     its `credential-provider`",
+                    args.join(" "),
+                    registry.described()
                 );
             }
             if shell.verbose() {
@@ -452,10 +477,21 @@ impl State {
                     &format!("{} {action} {}", args.join(" "), registry.shown()),
                 );
             }
+            let info = protocol::Registry {
+                index_url: registry.source.url().as_str(),
+                name: registry.name,
+                headers,
+            };
             let answer = match program {
                 TOKEN => self.cargo_token(shell, registry, action),
+                "cargo:token-from-stdout" => {
+                    process::token_from_stdout(&info, action, &args[1..], self.config.cwd())
+                }
                 // A built-in provider of another platform answers for no registry.
-                _ => Err(Failure::UrlNotSupported),
+                _ if BUILT_IN.contains(&program) => Err(Failure::UrlNotSupported),
+                path => {
+                    process::credential_process(path, &info, action, &args[1..], self.config.cwd())
+                }
             };
             match answer {
                 Ok(response) => return Ok(response),
@@ -487,7 +523,7 @@ impl State {
         let crates_io = registry.source.is_crates_io();
         let shown = registry.shown();
         match action {
-            Action::Get => {
+            Action::Get(_) => {
                 let token = previous.ok_or(Failure::NotFound)?.val;
                 Ok(Response::Get {
                     token,
@@ -591,17 +627,14 @@ impl State {
     }
 
     /// The table of the registry's name: `[registry]` for crates.io, else the name found by its
-    /// index URL among `CARGO_REGISTRIES_<NAME>_INDEX` and then `[registries]`.
+    /// index URL among `CARGO_REGISTRIES_<NAME>_INDEX` and then `[registries]` (cargo's
+    /// `registry_config` and `registry_credentials`).
     fn credentials_uncached(
         &self,
         shell: &dyn Shell,
         registry: Named<'_>,
     ) -> anyhow::Result<Option<Credentials>> {
         let config = &self.config;
-        config.load_credentials()?;
-        for warning in config.take_warnings() {
-            shell.warn(&warning);
-        }
         if !registry.source.is_remote_registry() {
             bail!(
                 "{} does not support API commands.\nCheck for a source-replacement in .cargo/config.",
@@ -610,22 +643,31 @@ impl State {
         }
         let table = if registry.source.is_crates_io() {
             config.check_registry_index_not_set()?;
-            "registry".to_owned()
+            Some("registry".to_owned())
         } else {
-            let Some(name) = registry_name(config, registry.source)? else { return Ok(None) };
-            if Some(name.as_str()) != registry.name {
+            let name = registry_name(config, registry.source)?;
+            if let Some(name) = &name
+                && Some(name.as_str()) != registry.name
+            {
                 shell.note(&format!(
                     "name of alternative registry `{}` set to `{name}`",
                     registry.source.url()
                 ));
             }
-            format!("registries.{name}")
+            name.map(|it| format!("registries.{it}"))
         };
-        Ok(Some(Credentials {
-            token: config.get::<OptValue<String>>(&format!("{table}.token"))?,
-            secret_key: config.get::<OptValue<String>>(&format!("{table}.secret-key"))?,
-            provider: config.get::<Option<PathAndArgs>>(&format!("{table}.credential-provider"))?,
-        }))
+        let provider = match &table {
+            Some(table) => {
+                config.get::<Option<PathAndArgs>>(&format!("{table}.credential-provider"))?
+            }
+            None => None,
+        };
+        config.load_credentials()?;
+        for warning in config.take_warnings() {
+            shell.warn(&warning);
+        }
+        let Some(table) = table else { return Ok(None) };
+        Ok(Some(Credentials { token: config.credentials_token(&table)?, provider }))
     }
 
     /// cargo's `credential_provider`: the providers to ask in turn, each a program and its
@@ -674,15 +716,6 @@ impl State {
                     "{described} has a token configured in {} that will be ignored because this \
                      registry is configured to use credential-provider `{}`",
                     token.definition, provider[0]
-                ));
-            }
-            if let Some(key) = &found.secret_key
-                && provider[0] != "cargo:paseto"
-            {
-                warn(format!(
-                    "{described} has a secret-key configured in {} that will be ignored because \
-                     this registry is configured to use credential-provider `{}`",
-                    key.definition, provider[0]
                 ));
             }
             return Ok(vec![provider]);

@@ -10,6 +10,14 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 
 ### Added
 
+- Credential providers are asked as cargo asks them (#315): `cargo:token-from-stdout`, and
+  credential processes in cargo's protocol, version 1, in the order of
+  `registry.global-credential-providers`, for the index, `.crate` files and the web API
+  commands alike. `cargo:wincred`, `cargo:macos-keychain` and `cargo:libsecret` on their own
+  platform are refused, naming the provider and what to set instead; they were refused with
+  every other provider but `cargo:token`. `credentials.toml` gives only tokens, below their
+  environment variables, as in cargo 1.101 (`harness/own_registry.py`, 101 of 101 cases).
+
 - Nightly's `#[derive(From)]` (`#![feature(derive_from)]`, `std::from::From`) expands, as
   rustc's does: `From` of the type of a struct's one field, keeping the struct's generics.
   Every use of the conversion was refused ("no impl of the trait was selected for it"). On an
@@ -78,8 +86,7 @@ each one's section: what `[Unreleased]` had, and the title of each change merged
 - `cargo blaze search`, `owner`, `yank`, `login` and `logout` are blaze's own: blaze-registry
   has a client of a registry's web API (crates-io 0.41's), with cargo's choice of registry, its
   token and `credentials.toml` as cargo writes it, and its errors (`harness/own_registry.py`,
-  73 of 73 cases against a mock registry, requests and credentials files too). Credential
-  providers other than `cargo:token` are refused.
+  73 of 73 cases against a mock registry, requests and credentials files too).
 - `cargo blaze vendor` is blaze's own for registry packages: each unpacked from its `.crate`
   with its `.cargo-checksum.json`, and the `[source]` configuration printed
   (`harness/own_vendor.py`, 18 of 18 cases, every file by its sha256). A git package is
